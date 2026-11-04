@@ -1,4 +1,12 @@
-import { setting, get, put, all, trashQueue, unqueueTrash } from "./db.js";
+import {
+  setting,
+  get,
+  put,
+  all,
+  remove,
+  trashQueue,
+  unqueueTrash,
+} from "./db.js";
 import { labelFor } from "./core.js";
 let token = "",
   expires = 0,
@@ -99,7 +107,7 @@ export async function connect(clientId) {
 async function api(path, options = {}) {
   if (!connected())
     throw Error("Reconnect Google Drive to continue uploading.");
-  const { upload, ...opts } = options;
+  const { upload, raw, ...opts } = options;
   const r = await fetch(
     (upload
       ? "https://www.googleapis.com/upload/drive/v3"
@@ -122,7 +130,39 @@ async function api(path, options = {}) {
     error.status = r.status;
     throw error;
   }
+  if (raw) return r.blob();
   return r.status === 204 ? {} : r.json();
+}
+const FOLDER = "application/vnd.google-apps.folder";
+const quote = (s) =>
+  "'" + String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+// List every file matching a Drive query, across all result pages.
+async function list(q, fields) {
+  const out = [];
+  let page = "";
+  do {
+    const r = await api(
+      "/files?spaces=drive&pageSize=1000&q=" +
+        encodeURIComponent(q) +
+        "&fields=" +
+        encodeURIComponent("nextPageToken,files(" + fields + ")") +
+        (page ? "&pageToken=" + encodeURIComponent(page) : ""),
+    );
+    out.push(...(r.files || []));
+    page = r.nextPageToken;
+  } while (page);
+  return out;
+}
+// Find a dataset folder another device already created, so this device reuses it.
+async function findFolder(name, parent) {
+  const found = await list(
+    `name = ${quote(name)} and mimeType = '${FOLDER}' and ${quote(parent || "root")} in parents and trashed = false`,
+    "id,createdTime",
+  );
+  found.sort((a, b) =>
+    (a.createdTime || "").localeCompare(b.createdTime || ""),
+  );
+  return found[0]?.id;
 }
 async function nextId() {
   return (await api("/files/generateIds?count=1&space=drive&type=files"))
@@ -165,7 +205,7 @@ async function ensureFile(id, meta, blob) {
 async function folder(key, name, parent) {
   let id = await setting("folder:" + key);
   if (!id) {
-    id = await nextId();
+    id = (await findFolder(name, parent)) || (await nextId());
     await setting("folder:" + key, id);
   }
   const f = await ensureFile(id, {
@@ -208,6 +248,178 @@ export async function emptyTrash(onStatus = () => {}) {
   return ids.length;
 }
 export const pendingTrash = async () => (await trashQueue()).length;
+
+// Load sessions and photos that other devices uploaded to the same Drive dataset.
+// Also mirrors changes made elsewhere: retaken photos are replaced, and photos whose
+// Drive files were deleted (moved to Trash) are removed here. Photos that this
+// device has not uploaded yet are never touched.
+export async function pull(onStatus = () => {}) {
+  return exclusive(async () => {
+    if (!connected()) throw Error("Connect Google Drive to load your dataset.");
+    onStatus("Looking for your dataset on Google Drive…");
+    let root = await setting("folder:root");
+    if (root) {
+      const f = await api("/files/" + root + "?fields=id,trashed").catch(
+        (e) => {
+          if (e.status === 404) return null;
+          throw e;
+        },
+      );
+      if (!f || f.trashed) root = null;
+    }
+    root = root || (await findFolder("BottleCapture Dataset"));
+    const result = { added: 0, replaced: 0, removed: 0, skipped: 0 };
+    if (!root) {
+      onStatus("No BottleCapture Dataset folder on this Google Drive yet.");
+      return result;
+    }
+    await setting("folder:root", root);
+    await setting("driveRoot", root);
+    const folders = new Map(
+      (
+        await list(
+          `mimeType = '${FOLDER}' and trashed = false`,
+          "id,name,parents",
+        )
+      ).map((f) => [f.id, f]),
+    );
+    // Returns [level, session, instance, bottle] folders when id is a level folder in this dataset.
+    const chain = (id) => {
+      const out = [];
+      for (
+        let f = folders.get(id);
+        f && out.length < 4;
+        f = folders.get(f.parents?.[0])
+      )
+        out.push(f);
+      return out.length === 4 && out[3].parents?.includes(root) ? out : null;
+    };
+    const allLabels = await list(
+      "mimeType = 'application/json' and trashed = false",
+      "id,name,parents,size",
+    );
+    const liveLabels = new Set(allLabels.map((f) => f.id));
+    const labels = allLabels.filter((f) => chain(f.parents?.[0]));
+    const images = new Map(
+      (
+        await list(
+          "mimeType = 'image/jpeg' and trashed = false",
+          "id,name,parents,size",
+        )
+      ).map((f) => [f.parents?.[0] + "/" + f.name, f]),
+    );
+    const local = await all("photos"),
+      known = new Set(local.map((p) => p.cloud?.label).filter(Boolean)),
+      fresh = labels.filter((f) => !known.has(f.id));
+    for (let i = 0; i < fresh.length; i++) {
+      const f = fresh[i],
+        img = images.get(
+          f.parents[0] + "/" + f.name.replace(/\.json$/, ".jpg"),
+        );
+      if (!img) {
+        result.skipped++;
+        continue;
+      }
+      onStatus(`Loading from Drive ${i + 1} of ${fresh.length} · ${img.name}`);
+      const label = JSON.parse(
+          await (
+            await api("/files/" + f.id + "?alt=media", { raw: true })
+          ).text(),
+        ),
+        [runId, lv, sh] = String(label.photo_id || "").split(":"),
+        level = Number(lv),
+        shot = Number(sh);
+      if (!runId || !Number.isInteger(level) || !Number.isInteger(shot)) {
+        result.skipped++;
+        continue;
+      }
+      const existing = await get("photos", label.photo_id);
+      if (existing && !existing.synced) {
+        // This device has its own unsent photo for the same slot. Keep it.
+        result.skipped++;
+        continue;
+      }
+      const blob = await api("/files/" + img.id + "?alt=media", { raw: true });
+      if (blob.size !== Number(img.size)) {
+        result.skipped++;
+        continue;
+      }
+      const [lvlF, sessF, instF, botF] = chain(f.parents[0]);
+      let r = await get("runs", runId);
+      if (!r) {
+        r = {
+          id: runId,
+          bottle: label.bottle_id,
+          instance: label.instance_id,
+          session: String(label.session_id).replace(/_[^_]*$/, ""),
+          setup: label.setup_id,
+          split: label.split,
+          background: label.background,
+          lighting: label.lighting,
+          tare: label.tare_g,
+          reference: label.reference_water_g,
+          resolution: label.scale_resolution_g,
+          created: label.taken_at,
+          fills: {},
+          importedFromDrive: new Date().toISOString(),
+        };
+      }
+      if (label.taken_at && label.taken_at < r.created)
+        r.created = label.taken_at;
+      if (!r.fills[level])
+        r.fills[level] = {
+          gross: label.gross_mass_g,
+          mass: label.water_mass_g,
+          measuredAt: label.taken_at,
+        };
+      await put("runs", r);
+      for (const [key, id] of [
+        [r.bottle, botF.id],
+        [r.bottle + "/" + r.instance, instF.id],
+        [r.id, sessF.id],
+        [r.id + "/" + level, lvlF.id],
+      ])
+        if (!(await setting("folder:" + key)))
+          await setting("folder:" + key, id);
+      await put("photos", {
+        id: label.photo_id,
+        run: runId,
+        level,
+        shot,
+        name: img.name,
+        path: label.relative_path,
+        mass: label.water_mass_g,
+        gross: label.gross_mass_g,
+        visibility: label.visibility,
+        blob: new Blob([blob], { type: "image/jpeg" }),
+        width: label.width,
+        height: label.height,
+        takenAt: label.taken_at,
+        synced: true,
+        syncedAt: new Date().toISOString(),
+        cloud: { image: img.id, label: f.id },
+      });
+      existing ? result.replaced++ : result.added++;
+    }
+    // Deleted or retaken on another device: the old Drive record is gone or in Trash.
+    for (const p of await all("photos"))
+      if (p.synced && p.cloud?.label && !liveLabels.has(p.cloud.label)) {
+        await remove("photos", p.id);
+        result.removed++;
+      }
+    const left = new Set((await all("photos")).map((p) => p.run));
+    for (const r of await all("runs"))
+      if (r.importedFromDrive && !left.has(r.id)) await remove("runs", r.id);
+    onStatus(
+      `Drive loaded · ${result.added} new, ${result.replaced} updated, ${result.removed} removed` +
+        (result.skipped
+          ? `, ${result.skipped} skipped (incomplete or changed here)`
+          : "") +
+        ".",
+    );
+    return result;
+  });
+}
 export async function sync(onStatus = () => {}) {
   if (busy) return;
   busy = true;

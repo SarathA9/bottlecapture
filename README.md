@@ -51,3 +51,8 @@ In Dataset, open a photo and tap Retake this photo. The app opens the same bottl
 
 ## Live camera
 The live camera fills the screen and sizes the preview to the real video, so the guide frame sits on the image. It asks for the full 4:3 sensor and, if an upright phone returns a sideways stream, asks again for a portrait stream. The live label shows the actual stream resolution.
+
+## Use on several devices (phone + laptop)
+Each browser keeps its own local copy. To see phone photos on the laptop, use the same Google account **and the same OAuth client ID** on both. Google's `drive.file` access only lets an app see files created with its own Cloud project, so a different client ID from another project cannot see the phone's uploads.
+
+When Drive is connected, the app loads the shared dataset on start and after Connect. You can also tap Load from Drive in Dataset or Settings. It downloads sessions and photos uploaded by other devices, replaces photos retaken elsewhere, and removes photos whose Drive files were deleted elsewhere. Photos this device has not uploaded yet are never removed. Every device reuses the existing BottleCapture Dataset folders instead of creating duplicates. Archived-attempt status is not stored on Drive, so an archived attempt appears as a normal session on other devices.

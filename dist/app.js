@@ -218,7 +218,7 @@ function shootPage() {
   return `${header(`${retake ? "Retake · " : ""}Shot ${shot + 1} of ${countShots(r)} · ${s[0]}`, `${level * 10}% target · Actual water: ${grams(f.mass)} g`, `<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause session"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">Your next research image.</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use iPhone Camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn secondary" style="width:100%;margin:12px 0;cursor:pointer">${icon("capture")} Use iPhone Camera / choose photo<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label><p class="tiny">The live camera may use a lower resolution. Use iPhone Camera for the device’s still-photo capture. Review image dimensions before saving.</p><div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">${esc(s[3])}</div><h2 class="instruction">${s[1]}</h2><p>${s[2]}</p>${angleDiagram(shot)}<ol class="steps"><li>Original label on. Bottle upright.</li><li>Cap and base visible, with a small margin.</li><li>Tap to focus in the iPhone camera. Avoid glare and motion blur.</li><li>No scale, mass notes or measuring jug in view.</li></ol><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div><p class="tiny">${photoPath(r, level, shot).split("/").slice(0, -1).join(" / ")}</p></section></div>`;
 }
 function dataset() {
-  return `${header("Your dataset, organised.", "Every approved photo keeps its measured mass and capture details.", `<button class="btn" id="syncNow">${icon("cloud")} Sync now</button>`)}<div class="notice">${photos.length} local photos · ${photos.filter((p) => p.synced).length} confirmed on Drive · ${photos.filter((p) => !p.synced).length} waiting.${trashCount ? ` ${trashCount} old Drive files waiting to move to Trash.` : ""} Local data belongs to this browser on this device. Export after each session.</div><div class="toolbar"><select id="datasetFilter" aria-label="Filter by bottle"><option value="all">All bottles</option>${bottles.map((b) => `<option value="${b.id}">${b.id} · ${b.name}</option>`).join("")}</select><button class="btn secondary small" id="csvExport">${icon("download")} Download labels CSV</button><button class="btn secondary small" data-export="all">Export all ZIP</button></div><p class="sync-status" id="syncStatus">${esc(syncMessage)}</p><div class="photo-grid" id="photoGrid">${photoTiles(photos)}</div>${!photos.length ? '<section class="panel empty"><h2>No photos yet.</h2><p>Your reviewed photos will appear here with their actual water mass.</p><button class="btn" data-new="B04">Start collecting</button></section>' : ""}`;
+  return `${header("Your dataset, organised.", "Every approved photo keeps its measured mass and capture details.", `<div class="actions"><button class="btn secondary" id="pullDrive">${icon("download")} Load from Drive</button><button class="btn" id="syncNow">${icon("cloud")} Sync now</button></div>`)}<div class="notice">${photos.length} local photos · ${photos.filter((p) => p.synced).length} confirmed on Drive · ${photos.filter((p) => !p.synced).length} waiting.${trashCount ? ` ${trashCount} old Drive files waiting to move to Trash.` : ""} Each device keeps its own copy. Load from Drive brings in sessions taken on your other devices with the same Google account.</div><div class="toolbar"><select id="datasetFilter" aria-label="Filter by bottle"><option value="all">All bottles</option>${bottles.map((b) => `<option value="${b.id}">${b.id} · ${b.name}</option>`).join("")}</select><button class="btn secondary small" id="csvExport">${icon("download")} Download labels CSV</button><button class="btn secondary small" data-export="all">Export all ZIP</button></div><p class="sync-status" id="syncStatus">${esc(syncMessage)}</p><div class="photo-grid" id="photoGrid">${photoTiles(photos)}</div>${!photos.length ? '<section class="panel empty"><h2>No photos yet.</h2><p>Your reviewed photos will appear here with their actual water mass.</p><button class="btn" data-new="B04">Start collecting</button></section>' : ""}`;
 }
 function photoTiles(list) {
   return [...list]
@@ -234,7 +234,7 @@ function guide() {
 }
 let settingsCache = {};
 function settings() {
-  return `${header("Make the studio yours.", "Connect storage, protect your dataset and keep collecting.")}<div class="grid2"><section class="panel"><div class="bar"><h2>Google Drive</h2><span class="badge ${drive.connected() ? "" : "warn"}">${drive.connected() ? "Connected" : "Setup / reconnect"}</span></div><p>Save & Next uploads the approved photo and its measured-mass JSON record. The app creates a dedicated “BottleCapture Dataset” folder.</p><form id="driveForm">${field("Google OAuth web client ID", "client", settingsCache.client || "", "A public client ID ending in .apps.googleusercontent.com. Never enter a client secret.")}<button class="btn secondary" type="submit">Save client ID</button></form><div class="actions"><button class="btn" id="connectDrive">${icon("cloud")} Connect Google Drive</button><button class="btn secondary" id="syncNow">Sync pending</button>${drive.connected() ? '<button class="btn ghost" id="disconnectDrive">Disconnect</button>' : ""}</div><p class="tiny">${settingsCache.email ? "Dataset account: " + esc(settingsCache.email) : "Connect once, then reconnect when Google’s access token expires."}</p>${settingsCache.root ? `<a class="text-link" href="https://drive.google.com/drive/folders/${encodeURIComponent(settingsCache.root)}" target="_blank" rel="noopener">Open your Drive dataset ↗</a>` : ""}<p id="syncStatus" class="sync-status">${esc(syncMessage)}</p><details><summary class="text-link">One-time Google setup instructions</summary><ol class="steps"><li>Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> on your laptop. Create a project called BottleCapture.</li><li>Enable the <strong>Google Drive API</strong>.</li><li>Configure Google Auth Platform: your app name, contact email, and audience. For a personal external testing app, add your own Google email as a test user.</li><li>Create an OAuth client with application type <strong>Web application</strong>.</li><li>Add this exact <strong>Authorized JavaScript origin</strong>:<div class="filename">${esc(location.origin)}</div></li><li>Copy the client ID here, save it, and tap Connect Google Drive. No client secret or redirect URI is needed for this browser token flow.</li><li>Allow access to files this app creates. Take one pilot photo and confirm both its JPEG and JSON arrive before a full session.</li></ol><p class="tiny">Google may require additional consent-screen configuration. Your password stays with Google; access tokens stay in tab session storage until expiry or disconnect, separate from the dataset.</p></details></section><section class="panel"><h2>Local safety net</h2><p>Approved photos are saved in this browser before uploading. Keep this tab open until uploads finish. Safari may pause work when the phone locks.</p><div class="notice warn">Browser storage is not a permanent backup. Clearing website data can remove unexported photos. Private browsing is unsuitable for collection.</div><div class="actions"><button class="btn secondary" data-export="all">${icon("download")} Export all photos + labels</button><button class="btn secondary" id="csvExport">Labels CSV</button><button class="btn ghost" id="persistStorage">Request persistent storage</button></div><p id="storageStatus" class="tiny"></p><hr class="divider"><h3>Use it on your iPhone</h3><ol class="steps"><li>Open this site in <strong>Safari</strong> and sign in to access your private app.</li><li>Use Share → <strong>Add to Home Screen</strong> for quick access.</li><li>Allow camera access when prompted. Start with a pilot session.</li></ol><p class="tiny">This version requires the site to load online. If the connection drops while it is open, photos can stay locally queued. Reopen online and reconnect Drive to resume.</p><hr class="divider"><h3>What stays on your device?</h3><p class="tiny">Photos, measurements and setup notes are stored locally. Connecting Drive uploads approved photos and per-photo labels to your own account. This app uses no LLM API and does not train or run your prediction model.</p></section></div>`;
+  return `${header("Make the studio yours.", "Connect storage, protect your dataset and keep collecting.")}<div class="grid2"><section class="panel"><div class="bar"><h2>Google Drive</h2><span class="badge ${drive.connected() ? "" : "warn"}">${drive.connected() ? "Connected" : "Setup / reconnect"}</span></div><p>Save & Next uploads the approved photo and its measured-mass JSON record. The app creates a dedicated “BottleCapture Dataset” folder.</p><form id="driveForm">${field("Google OAuth web client ID", "client", settingsCache.client || "", "A public client ID ending in .apps.googleusercontent.com. Never enter a client secret.")}<button class="btn secondary" type="submit">Save client ID</button></form><div class="actions"><button class="btn" id="connectDrive">${icon("cloud")} Connect Google Drive</button><button class="btn secondary" id="syncNow">Sync pending</button><button class="btn secondary" id="pullDrive">Load from Drive</button>${drive.connected() ? '<button class="btn ghost" id="disconnectDrive">Disconnect</button>' : ""}</div><p class="tiny">${settingsCache.email ? "Dataset account: " + esc(settingsCache.email) : "Connect once, then reconnect when Google’s access token expires."}</p>${settingsCache.root ? `<a class="text-link" href="https://drive.google.com/drive/folders/${encodeURIComponent(settingsCache.root)}" target="_blank" rel="noopener">Open your Drive dataset ↗</a>` : ""}<p id="syncStatus" class="sync-status">${esc(syncMessage)}</p><details><summary class="text-link">One-time Google setup instructions</summary><ol class="steps"><li>Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> on your laptop. Create a project called BottleCapture.</li><li>Enable the <strong>Google Drive API</strong>.</li><li>Configure Google Auth Platform: your app name, contact email, and audience. For a personal external testing app, add your own Google email as a test user.</li><li>Create an OAuth client with application type <strong>Web application</strong>.</li><li>Add this exact <strong>Authorized JavaScript origin</strong>:<div class="filename">${esc(location.origin)}</div></li><li>Copy the client ID here, save it, and tap Connect Google Drive. No client secret or redirect URI is needed for this browser token flow.</li><li>Allow access to files this app creates. Take one pilot photo and confirm both its JPEG and JSON arrive before a full session.</li></ol><p class="tiny">Google may require additional consent-screen configuration. Your password stays with Google; access tokens stay in tab session storage until expiry or disconnect, separate from the dataset.</p></details></section><section class="panel"><h2>Local safety net</h2><p>Approved photos are saved in this browser before uploading. Keep this tab open until uploads finish. Safari may pause work when the phone locks.</p><div class="notice warn">Browser storage is not a permanent backup. Clearing website data can remove unexported photos. Private browsing is unsuitable for collection.</div><div class="actions"><button class="btn secondary" data-export="all">${icon("download")} Export all photos + labels</button><button class="btn secondary" id="csvExport">Labels CSV</button><button class="btn ghost" id="persistStorage">Request persistent storage</button></div><p id="storageStatus" class="tiny"></p><hr class="divider"><h3>Use it on your iPhone</h3><ol class="steps"><li>Open this site in <strong>Safari</strong> and sign in to access your private app.</li><li>Use Share → <strong>Add to Home Screen</strong> for quick access.</li><li>Allow camera access when prompted. Start with a pilot session.</li></ol><p class="tiny">This version requires the site to load online. If the connection drops while it is open, photos can stay locally queued. Reopen online and reconnect Drive to resume.</p><hr class="divider"><h3>What stays on your device?</h3><p class="tiny">Photos, measurements and setup notes are stored locally. Connecting Drive uploads approved photos and per-photo labels to your own account. This app uses no LLM API and does not train or run your prediction model.</p></section></div>`;
 }
 function on(sel, event, fn) {
   $(sel)?.addEventListener(event, (e) => {
@@ -503,10 +503,10 @@ function bind() {
         await loadSettings();
         render();
         toast(
-          "Connected as " +
-            u.emailAddress +
-            ". Tap Sync pending for existing photos.",
+          "Connected as " + u.emailAddress + ". Loading your Drive dataset…",
         );
+        await pullNow();
+        if (photos.some((p) => !p.synced)) await syncNow();
       })
       .catch(fail);
   });
@@ -516,6 +516,7 @@ function bind() {
     toast("Disconnected. Local photos are unchanged.");
   });
   on("#syncNow", "click", syncNow);
+  on("#pullDrive", "click", () => pullNow());
   on("#persistStorage", "click", async () => {
     const ok = await navigator.storage?.persist?.();
     $("#storageStatus").textContent = ok
@@ -769,6 +770,38 @@ async function syncNow() {
     throw e;
   }
 }
+let pulling = false;
+async function pullNow(quiet = false) {
+  if (pulling) return;
+  if (!navigator.onLine)
+    throw Error("You are offline. Connect to load your Drive dataset.");
+  if (!drive.connected())
+    throw Error("Open Settings and connect Google Drive first.");
+  pulling = true;
+  const status = (msg) => {
+    syncMessage = msg;
+    if ($("#syncStatus")) $("#syncStatus").textContent = msg;
+  };
+  try {
+    const r = await drive.pull(status);
+    await refresh();
+    await loadSettings();
+    // Avoid redrawing over a photo review or a running camera.
+    if (
+      page === "dataset" ||
+      page === "settings" ||
+      page === "home" ||
+      page === "capture"
+    )
+      render();
+    if (!quiet || r.added || r.replaced || r.removed) toast(syncMessage);
+  } catch (e) {
+    status("Loading from Drive paused: " + e.message);
+    throw e;
+  } finally {
+    pulling = false;
+  }
+}
 async function loadSettings() {
   settingsCache = {
     client: await setting("client"),
@@ -885,3 +918,5 @@ await refresh();
 await loadSettings();
 await drive.restore(settingsCache.client);
 render();
+// Bring in photos from your other devices whenever the app opens with Drive connected.
+if (drive.connected() && navigator.onLine) pullNow(true).catch(fail);

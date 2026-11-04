@@ -68,11 +68,31 @@ globalThis.fetch = async (url, opts = {}) => {
     });
   if (path.endsWith("/generateIds"))
     return response({ ids: ["id" + ++sequence] });
+  // Drive trashes everything inside a trashed folder.
+  const trashed = (f) =>
+    !!f && (f.trashed || (f.parents || []).some((x) => trashed(files.get(x))));
+  if (method === "GET" && path.endsWith("/files")) {
+    const terms = (u.searchParams.get("q") || "").split(" and ");
+    const match = (f) =>
+      terms.every((t) => {
+        let m;
+        if ((m = t.match(/^name = '(.*)'$/))) return f.name === m[1];
+        if ((m = t.match(/^mimeType = '(.*)'$/))) return f.mimeType === m[1];
+        if ((m = t.match(/^'(.*)' in parents$/)))
+          return m[1] === "root"
+            ? !f.parents?.length
+            : !!f.parents?.includes(m[1]);
+        if (t === "trashed = false") return !trashed(f);
+        throw Error("Unsupported test query " + t);
+      });
+    return response({ files: [...files.values()].filter(match) });
+  }
   if (method === "GET") {
     const id = path.split("/").pop();
-    return files.has(id)
-      ? response(files.get(id))
-      : response({ error: { message: "missing" } }, 404);
+    if (!files.has(id)) return response({ error: { message: "missing" } }, 404);
+    const f = files.get(id);
+    if (u.searchParams.get("alt") === "media") return new Response(f.data);
+    return response({ ...f, trashed: trashed(f) });
   }
   if (method === "PATCH") {
     const id = path.split("/").pop();
@@ -82,18 +102,14 @@ globalThis.fetch = async (url, opts = {}) => {
     return response(f);
   }
   if (method === "POST") {
-    let meta, size;
+    let meta, size, data;
     if (typeof opts.body === "string") meta = JSON.parse(opts.body);
     else {
       const text = await opts.body.text(),
         boundary = opts.headers["Content-Type"].split("boundary=")[1],
         parts = text.split("--" + boundary);
       meta = JSON.parse(parts[1].split("\r\n\r\n")[1].trim());
-      const data = parts[2]
-        .split("\r\n\r\n")
-        .slice(1)
-        .join("\r\n\r\n")
-        .slice(0, -2);
+      data = parts[2].split("\r\n\r\n").slice(1).join("\r\n\r\n").slice(0, -2);
       size = new Blob([data]).size;
       if (meta.mimeType === "application/json" && failLabel) {
         failLabel = false;
@@ -104,6 +120,10 @@ globalThis.fetch = async (url, opts = {}) => {
     const f = {
       id: meta.id,
       name: meta.name,
+      mimeType: meta.mimeType,
+      parents: meta.parents || [],
+      createdTime: new Date(Date.now() + sequence).toISOString(),
+      data,
       ...(size === undefined ? {} : { size: String(size) }),
       trashed: false,
     };
@@ -256,3 +276,165 @@ assert.deepEqual(await trashQueue(), []);
 console.log(
   "PASS: delete while offline queues the Drive folder and trashes it at the next sync.",
 );
+
+// Second device: a fresh browser with the same Google account loads the dataset.
+{
+  const {
+    remove,
+    put: put2,
+    setting: setting2,
+  } = await import("../dist/db.js");
+  const keepOwner = await setting2("driveOwner");
+  // Phone: one session with two uploaded photos.
+  const phoneRun = {
+    ...r,
+    id: "run6",
+    session: "S06",
+    fills: { 4: { gross: 800, mass: 300 } },
+  };
+  await put2("runs", phoneRun);
+  await addPhoto({
+    ...p,
+    id: "run6:4:0",
+    run: "run6",
+    level: 4,
+    shot: 0,
+    mass: 300,
+    gross: 800,
+    name: "B04_S06_L04_A_01.jpg",
+    blob: new Blob(["phone-A"], { type: "image/jpeg" }),
+  });
+  await addPhoto({
+    ...p,
+    id: "run6:4:1",
+    run: "run6",
+    level: 4,
+    shot: 1,
+    mass: 300,
+    gross: 800,
+    name: "B04_S06_L04_B_02.jpg",
+    blob: new Blob(["phone-B!"], { type: "image/jpeg" }),
+  });
+  await sync();
+  const rootBefore = await setting2("folder:root");
+  const phoneCloud = (await get("photos", "run6:4:0")).cloud;
+  // Laptop: empty local storage.
+  for (const store of ["runs", "photos", "settings"])
+    for (const x of await all(store)) await remove(store, x.id);
+  await setting2("driveOwner", keepOwner);
+  assert.equal((await all("photos")).length, 0);
+  const res = await drv.pull();
+  assert.equal(res.added, 3); // run1's photo plus the two phone photos
+  const laptopRun = await get("runs", "run6");
+  assert.equal(laptopRun.session, "S06");
+  assert.equal(laptopRun.tare, 500);
+  assert.equal(laptopRun.fills[4].mass, 300);
+  const a = await get("photos", "run6:4:0");
+  assert.equal(await a.blob.text(), "phone-A");
+  assert.equal(a.synced, true);
+  assert.equal(a.mass, 300);
+  assert.deepEqual(a.cloud, phoneCloud);
+  assert.equal(await setting2("folder:root"), rootBefore);
+  // Pulling again downloads nothing new.
+  assert.deepEqual(await drv.pull(), {
+    added: 0,
+    replaced: 0,
+    removed: 0,
+    skipped: 0,
+  });
+  // Laptop uploads a new photo into an existing level: no duplicate root or folders.
+  const folderCount = [...files.values()].filter(
+    (f) => f.mimeType === "application/vnd.google-apps.folder",
+  ).length;
+  await addPhoto({
+    ...p,
+    id: "run6:4:2",
+    run: "run6",
+    level: 4,
+    shot: 2,
+    mass: 300,
+    gross: 800,
+    name: "B04_S06_L04_C_03.jpg",
+  });
+  await sync();
+  assert.equal(
+    [...files.values()].filter(
+      (f) => f.mimeType === "application/vnd.google-apps.folder",
+    ).length,
+    folderCount,
+  );
+  // Fresh device with no stored folder IDs reuses the existing root by name.
+  await remove("settings", "folder:root");
+  await remove("settings", "folder:B04");
+  await addPhoto({
+    ...p,
+    id: "run6:4:3",
+    run: "run6",
+    level: 4,
+    shot: 3,
+    mass: 300,
+    gross: 800,
+    name: "B04_S06_L04_D_04.jpg",
+  });
+  await sync();
+  assert.equal(await setting2("folder:root"), rootBefore);
+  assert.equal(
+    [...files.values()].filter(
+      (f) => f.mimeType === "application/vnd.google-apps.folder",
+    ).length,
+    folderCount,
+  );
+  // A retake on the other device: old Drive files trashed, new ones present for the same slot.
+  const old = await get("photos", "run6:4:1");
+  files.get(old.cloud.image).trashed = true;
+  files.get(old.cloud.label).trashed = true;
+  const lvl = files.get(old.cloud.label).parents[0];
+  files.set("retakeImg", {
+    id: "retakeImg",
+    name: old.name,
+    mimeType: "image/jpeg",
+    parents: [lvl],
+    size: "6",
+    data: "retake",
+    trashed: false,
+  });
+  const lbl = JSON.stringify({
+    ...JSON.parse(files.get(old.cloud.label).data),
+    water_mass_g: 301,
+  });
+  files.set("retakeLbl", {
+    id: "retakeLbl",
+    name: old.name.replace(".jpg", ".json"),
+    mimeType: "application/json",
+    parents: [lvl],
+    size: String(lbl.length),
+    data: lbl,
+    trashed: false,
+  });
+  const res2 = await drv.pull();
+  assert.equal(res2.replaced, 1);
+  assert.equal(res2.removed, 0);
+  const re = await get("photos", "run6:4:1");
+  assert.equal(await re.blob.text(), "retake");
+  assert.equal(re.mass, 301);
+  // A session deleted on the other device disappears here too.
+  files.get(await setting2("folder:run6")).trashed = true;
+  const res3 = await drv.pull();
+  assert.equal(res3.removed, 4);
+  assert.equal(await get("runs", "run6"), undefined);
+  assert.equal((await all("photos")).filter((x) => x.run === "run6").length, 0);
+  // Unsent local photos are never removed by a pull.
+  await put2("runs", { ...r, id: "run7", session: "S07" });
+  await addPhoto({
+    ...p,
+    id: "run7:1:0",
+    run: "run7",
+    level: 1,
+    name: "local.jpg",
+  });
+  await drv.pull();
+  assert.ok(await get("photos", "run7:1:0"));
+  console.log(
+    "PASS: second device loads Drive sessions, reuses folders, mirrors retakes and deletes, keeps unsent photos.",
+  );
+}

@@ -35,6 +35,15 @@ export async function put(store, obj) {
     t.onabort = () => rej(t.error || Error("Storage write cancelled."));
   });
 }
+export async function remove(store, id) {
+  const d = await ready;
+  return new Promise((res, rej) => {
+    const t = d.transaction(store, "readwrite");
+    t.objectStore(store).delete(id);
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+  });
+}
 export async function addPhoto(obj) {
   const d = await ready;
   return new Promise((res, rej) => {
