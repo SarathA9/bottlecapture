@@ -1,0 +1,11 @@
+{
+  "name": "bottlecapture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tests/core.test.js && node tests/storage-drive.test.js"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.7"
+  }
+}
