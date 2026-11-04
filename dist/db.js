@@ -75,6 +75,15 @@ function queueTrash(settings, ids) {
     settings.put({ id: TRASH, value: list });
   };
 }
+export async function queueTrashIds(ids) {
+  const d = await ready;
+  return new Promise((resolve, reject) => {
+    const t = d.transaction("settings", "readwrite");
+    queueTrash(t.objectStore("settings"), ids);
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
 export async function trashQueue() {
   return (await setting(TRASH)) || [];
 }

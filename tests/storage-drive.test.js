@@ -683,3 +683,108 @@ console.log(
     "PASS: two accounts edit one dataset: add, retake, delete in each other's sessions, newest retake wins, unsent photos kept.",
   );
 }
+
+// Partner connected BEFORE the folder was shared: his phone made its own dataset folder.
+// After sharing, his phone switches to the shared (older) folder and re-uploads his photos.
+{
+  const db = await import("../dist/db.js");
+  const wipe = async () => {
+    for (const store of ["runs", "photos", "settings"])
+      for (const x of await all(store)) await db.remove(store, x.id);
+  };
+  const OWNER = "test@example.invalid",
+    LATE = "late@example.invalid";
+  await wipe();
+  me = OWNER;
+  await connect("test.apps.googleusercontent.com");
+  await drv.pull();
+  const sharedRoot = await db.setting("folder:root");
+  const ownerDevice = {};
+  for (const store of ["runs", "photos", "settings"])
+    ownerDevice[store] = await all(store);
+
+  // Partner's phone, not shared yet.
+  await wipe();
+  me = LATE;
+  await connect("test.apps.googleusercontent.com");
+  await db.put("runs", {
+    ...r,
+    id: "runL",
+    session: "S20",
+    bottle: "B02",
+    instance: "I05",
+    fills: {},
+  });
+  await db.addPhoto({
+    ...p,
+    id: "runL:1:0",
+    run: "runL",
+    level: 1,
+    shot: 0,
+    name: "B02_I05_S20_L01_A_01.jpg",
+    blob: new Blob(["late-photo"], { type: "image/jpeg" }),
+  });
+  await sync();
+  const ownRoot = await db.setting("folder:root");
+  assert.notEqual(ownRoot, sharedRoot, "before sharing he has his own folder");
+  const firstCopy = (await get("photos", "runL:1:0")).cloud.image;
+
+  // Owner shares the folder. The partner's next sync switches and re-uploads.
+  files.get(sharedRoot).sharedWith = [LATE];
+  await sync();
+  assert.equal(
+    await db.setting("folder:root"),
+    sharedRoot,
+    "switched to the shared folder",
+  );
+  const moved = await get("photos", "runL:1:0");
+  assert.equal(moved.synced, true);
+  assert.notEqual(moved.cloud.image, firstCopy);
+  assert.equal(
+    files.get(firstCopy).trashed,
+    true,
+    "old copy removed from his own folder",
+  );
+  let a = files.get(moved.cloud.image);
+  const chainUp = [];
+  while (a?.parents?.length) {
+    chainUp.push(a.parents[0]);
+    a = files.get(a.parents[0]);
+  }
+  assert.ok(
+    chainUp.includes(sharedRoot),
+    "new copy is inside the shared folder",
+  );
+  const lateDevice = {};
+  for (const store of ["runs", "photos", "settings"])
+    lateDevice[store] = await all(store);
+
+  // Owner's phone sees the partner's photo; the partner sees the owner's photos.
+  await wipe();
+  for (const store of ["runs", "photos", "settings"])
+    for (const x of ownerDevice[store]) await db.put(store, x);
+  me = OWNER;
+  await connect("test.apps.googleusercontent.com");
+  await drv.pull();
+  assert.equal(
+    await (await get("photos", "runL:1:0")).blob.text(),
+    "late-photo",
+  );
+  const ownerPhotos = (await all("photos")).filter(
+    (x) => x.run !== "runL",
+  ).length;
+  await wipe();
+  for (const store of ["runs", "photos", "settings"])
+    for (const x of lateDevice[store]) await db.put(store, x);
+  me = LATE;
+  await connect("test.apps.googleusercontent.com");
+  await drv.pull();
+  assert.equal(
+    (await all("photos")).filter((x) => x.run !== "runL").length,
+    ownerPhotos,
+    "partner loads the owner's dataset",
+  );
+  console.log(
+    "PASS: partner who connected before sharing switches to the shared folder, re-uploads, and both see everything.",
+  );
+}

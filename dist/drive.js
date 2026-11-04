@@ -6,6 +6,7 @@ import {
   remove,
   trashQueue,
   unqueueTrash,
+  queueTrashIds,
 } from "./db.js";
 import { labelFor } from "./core.js";
 let token = "",
@@ -221,17 +222,56 @@ async function ensureFile(id, meta, blob) {
 // Which "BottleCapture Dataset" folder to use, in order:
 // 1. a folder link pasted in Settings, 2. a folder someone shared with this account,
 // 3. this account's own folder.
+// Which "BottleCapture Dataset" folder is the shared one: a folder link pasted in
+// Settings, otherwise the OLDEST dataset folder this account can see (its own or one
+// shared with it). The person who started the project created theirs first, so every
+// collaborator converges on that one, even if they connected before it was shared.
 export async function findRoot() {
   const picked = await setting("datasetRoot");
   if (picked) return picked;
-  const shared = await list(
-    `name = ${quote(ROOT_NAME)} and mimeType = '${FOLDER}' and sharedWithMe = true and trashed = false`,
-    "id,createdTime",
-  );
-  shared.sort((a, b) =>
+  const q = `name = ${quote(ROOT_NAME)} and mimeType = '${FOLDER}' and trashed = false`;
+  const found = [
+    ...(await list(q + " and sharedWithMe = true", "id,createdTime")),
+    ...(await list(q + " and 'root' in parents", "id,createdTime")),
+  ];
+  found.sort((a, b) =>
     (a.createdTime || "").localeCompare(b.createdTime || ""),
   );
-  return shared[0]?.id || (await findFolder(ROOT_NAME));
+  return found[0]?.id;
+}
+// Make sure this device uses the shared dataset folder. If it has been using another
+// one (for example its own, created before the shared folder was shared), switch,
+// and queue this device's photos to upload again into the shared folder. The old
+// copies are then removed from the old folder.
+async function resolveRoot(onStatus) {
+  let current = await setting("folder:root");
+  if (current) {
+    const f = await api("/files/" + current + "?fields=id,trashed").catch(
+      (e) => {
+        if (e.status === 404) return null;
+        throw e;
+      },
+    );
+    if (!f || f.trashed) current = null;
+  }
+  const best = await findRoot();
+  if (!best || best === current) return current || best || null;
+  if (current) {
+    onStatus("Switching to the shared dataset folder…");
+    const moved = [];
+    for (const p of await all("photos"))
+      if (p.cloud) {
+        moved.push(p.cloud.image, p.cloud.label);
+        const { cloud, syncedAt, ...rest } = p;
+        await put("photos", { ...rest, synced: false });
+      }
+    await queueTrashIds(moved);
+  }
+  for (const x of await all("settings"))
+    if (x.id.startsWith("folder:")) await remove("settings", x.id);
+  await setting("folder:root", best);
+  await setting("driveRoot", best);
+  return best;
 }
 export async function rootInfo() {
   const id = await setting("folder:root");
@@ -338,17 +378,7 @@ export async function pull(onStatus = () => {}) {
   return exclusive(async () => {
     if (!connected()) throw Error("Connect Google Drive to load your dataset.");
     onStatus("Checking Google Drive for changes…");
-    let root = await setting("folder:root");
-    if (root) {
-      const f = await api("/files/" + root + "?fields=id,trashed").catch(
-        (e) => {
-          if (e.status === 404) return null;
-          throw e;
-        },
-      );
-      if (!f || f.trashed) root = null;
-    }
-    root = root || (await findRoot());
+    const root = await resolveRoot(onStatus);
     const result = { added: 0, replaced: 0, removed: 0, skipped: 0 };
     if (!root) {
       onStatus("No BottleCapture Dataset folder on this Google Drive yet.");
@@ -578,8 +608,9 @@ export async function sync(onStatus = () => {}) {
     try {
       if (!connected())
         throw Error("Connect Google Drive to upload your saved photos.");
+      await resolveRoot(onStatus);
       const removed = await emptyTrash(onStatus);
-      const root = await folder("root", "BottleCapture Dataset");
+      const root = await folder("root", ROOT_NAME);
       await setting("driveRoot", root);
       const runs = await all("runs");
       let uploaded = 0;
