@@ -22,6 +22,7 @@ import {
   restartRun,
   deleteRun,
   replacePhoto,
+  remove,
 } from "./db.js";
 import { zip } from "./zip.js";
 import * as drive from "./drive.js";
@@ -119,6 +120,14 @@ function done(r, l) {
     (p) => p.run === r.id && (l === undefined || p.level === l),
   ).length;
 }
+// A session uploaded by another Google account in the shared folder: view only here.
+function foreign(r) {
+  return (
+    !!r?.uploadedBy &&
+    !!settingsCache.email &&
+    r.uploadedBy.toLowerCase() !== settingsCache.email.toLowerCase()
+  );
+}
 function activeFill() {
   return retakeFill || current.fills[level];
 }
@@ -185,7 +194,7 @@ function iconSmall(n) {
 }
 function runRow(r) {
   const b = bottles.find((b) => b.id === r.bottle);
-  return `<div class="row"><div><strong>${esc(r.session)}${r.archived ? " (archived)" : ""} · ${b.name}</strong><small>${esc(r.instance)} · ${esc(r.split)} · ${done(r)} / ${11 * countShots(r)} photos</small></div><div class="actions"><button class="btn small secondary" data-run="${r.id}">${r.archived ? "View archived attempt" : "Open session"}</button>${!r.archived ? `<button class="btn small" data-resume="${r.id}">Continue photos</button>` : ""}</div></div>`;
+  return `<div class="row"><div><strong>${esc(r.session)}${r.archived ? " (archived)" : ""} · ${b.name}</strong><small>${esc(r.instance)} · ${esc(r.split)} · ${done(r)} / ${11 * countShots(r)} photos${foreign(r) ? " · by " + esc(r.uploadedBy) : ""}</small></div><div class="actions"><button class="btn small secondary" data-run="${r.id}">${r.archived ? "View archived attempt" : foreign(r) ? "View session" : "Open session"}</button>${!r.archived && !foreign(r) ? `<button class="btn small" data-resume="${r.id}">Continue photos</button>` : ""}</div></div>`;
 }
 function sessions() {
   return `${header("Collection sessions.", "Resume where you stopped, or start an independent setup.", `<button class="btn" data-new="B04">${icon("plus")} New session</button>`)}<div class="notice">Plan per bottle: 3 training sessions × 110 photos, 1 validation session × 55, and 1 holdout session × 55. Professor-provided datasets stay separate.</div><section class="panel">${runs.length ? runs.map(runRow).join("") : `<div class="empty"><h2>Your workspace is ready.</h2><p>Create a session and the app will guide every shot.</p><button class="btn" data-new="B04">Start your first session</button></div>`}</section>`;
@@ -200,7 +209,7 @@ function newSession() {
 function sessionPage() {
   const r = current,
     b = bottles.find((b) => b.id === r.bottle);
-  return `${header(`${b.name} · ${esc(r.session)}`, `${esc(r.split)} · ${esc(r.instance)} · ${esc(r.background)}`, `<button class="btn secondary" data-nav="capture">${icon("back")} Sessions</button>`)}<div class="grid2"><section class="panel"><div class="eyebrow">Session progress</div><h2>${done(r)} <span class="muted">/ ${11 * countShots(r)} photos</span></h2><p>${countShots(r)} views at each of 11 fill levels.</p><div class="progress"><i style="width:${(done(r) / (11 * countShots(r))) * 100}%"></i></div><div class="actions">${!r.archived ? `<button class="btn small" data-resume="${r.id}">Continue photos</button><button class="btn small secondary" id="resetSession">Reset session</button>` : '<span class="badge">Archived attempt</span>'}<button class="btn small secondary" data-export="${r.id}">${icon("download")} Export session ZIP</button><button class="btn small danger" id="deleteSession">Delete session</button></div></section><section class="panel soft"><div class="eyebrow">Your measurement reference</div><h2>${grams(r.reference)} g <span class="muted" style="font-size:13px">water at 100%</span></h2><p>Empty bottle + cap: ${grams(r.tare)} g<br>Scale step: ${grams(r.resolution)} g · Setup: ${esc(r.setup)}</p></section></div><div class="section-head"><h2>Choose a fill level</h2><small>Actual grams are recorded next</small></div><div class="levels">${Array.from({ length: 11 }, (_, l) => `<button class="level ${done(r, l) === countShots(r) ? "complete" : ""}" data-level="${l}" ${r.archived ? "disabled" : ""}><strong>${l * 10}%</strong><small>Target ≈ ${grams((r.reference * l) / 10)} g</small><small>${done(r, l)} / ${countShots(r)} photos ${done(r, l) === countShots(r) ? "✓" : ""}</small></button>`).join("")}</div><div class="notice">Targets help you choose fills. The exact balance reading becomes the training label. Let the water settle and wipe the outside dry. If you refill a level after leaving the setup, start a new session instead of reusing its old measurement.</div>`;
+  return `${header(`${b.name} · ${esc(r.session)}`, `${esc(r.split)} · ${esc(r.instance)} · ${esc(r.background)}`, `<button class="btn secondary" data-nav="capture">${icon("back")} Sessions</button>`)}<div class="grid2"><section class="panel"><div class="eyebrow">Session progress</div><h2>${done(r)} <span class="muted">/ ${11 * countShots(r)} photos</span></h2><p>${countShots(r)} views at each of 11 fill levels.</p><div class="progress"><i style="width:${(done(r) / (11 * countShots(r))) * 100}%"></i></div><div class="actions">${foreign(r) ? `<span class="badge warn">Uploaded by ${esc(r.uploadedBy)} · view only</span>` : !r.archived ? `<button class="btn small" data-resume="${r.id}">Continue photos</button><button class="btn small secondary" id="resetSession">Reset session</button>` : '<span class="badge">Archived attempt</span>'}<button class="btn small secondary" data-export="${r.id}">${icon("download")} Export session ZIP</button>${foreign(r) ? "" : '<button class="btn small danger" id="deleteSession">Delete session</button>'}</div></section><section class="panel soft"><div class="eyebrow">Your measurement reference</div><h2>${grams(r.reference)} g <span class="muted" style="font-size:13px">water at 100%</span></h2><p>Empty bottle + cap: ${grams(r.tare)} g<br>Scale step: ${grams(r.resolution)} g · Setup: ${esc(r.setup)}</p></section></div><div class="section-head"><h2>Choose a fill level</h2><small>Actual grams are recorded next</small></div><div class="levels">${Array.from({ length: 11 }, (_, l) => `<button class="level ${done(r, l) === countShots(r) ? "complete" : ""}" data-level="${l}" ${r.archived || foreign(r) ? "disabled" : ""}><strong>${l * 10}%</strong><small>Target ≈ ${grams((r.reference * l) / 10)} g</small><small>${done(r, l)} / ${countShots(r)} photos ${done(r, l) === countShots(r) ? "✓" : ""}</small></button>`).join("")}</div><div class="notice">Targets help you choose fills. The exact balance reading becomes the training label. Let the water settle and wipe the outside dry. If you refill a level after leaving the setup, start a new session instead of reusing its old measurement.</div>`;
 }
 function angleDiagram(s) {
   return `<div class="angle-diagram"><svg viewBox="0 0 300 145" aria-label="Camera framing illustration"><path d="M40 130h220" stroke="#c5d1b8"/><path d="M179 25h15v30l12 14v57h-39V69l12-14z" fill="#d3e0c5" stroke="#7c9870" stroke-width="2"/><path d="M169 91h35v21h-35z" fill="#fafbf7"/><g transform="translate(${s === 0 || s === 4 || s === 5 || s === 9 ? "45 70" : "60 20"}) rotate(${s === 0 || s === 4 || s === 5 || s === 9 ? "0" : "25"})"><rect width="34" height="24" rx="5" fill="#315c46"/><circle cx="18" cy="12" r="6" fill="#e6eed8"/><path d="M42 12h65" stroke="#91a782" stroke-dasharray="4 4"/></g><text x="150" y="143" text-anchor="middle" font-size="9" fill="#6e8268">${shots[s][3]} · whole bottle in frame</text></svg></div>`;
@@ -234,7 +243,7 @@ function guide() {
 }
 let settingsCache = {};
 function settings() {
-  return `${header("Make the studio yours.", "Connect storage, protect your dataset and keep collecting.")}<div class="grid2"><section class="panel"><div class="bar"><h2>Google Drive</h2><span class="badge ${drive.connected() ? "" : "warn"}">${drive.connected() ? "Connected" : "Setup / reconnect"}</span></div><p>Save & Next uploads the approved photo and its measured-mass JSON record. The app creates a dedicated “BottleCapture Dataset” folder.</p><form id="driveForm">${field("Google OAuth web client ID", "client", settingsCache.client || "", "A public client ID ending in .apps.googleusercontent.com. Never enter a client secret.")}<button class="btn secondary" type="submit">Save client ID</button></form><div class="actions"><button class="btn" id="connectDrive">${icon("cloud")} Connect Google Drive</button><button class="btn secondary" id="syncNow">Sync pending</button><button class="btn secondary" id="pullDrive">Load from Drive</button>${drive.connected() ? '<button class="btn ghost" id="disconnectDrive">Disconnect</button>' : ""}</div><p class="tiny">${settingsCache.email ? "Dataset account: " + esc(settingsCache.email) : "Connect once, then reconnect when Google’s access token expires."}</p>${settingsCache.root ? `<a class="text-link" href="https://drive.google.com/drive/folders/${encodeURIComponent(settingsCache.root)}" target="_blank" rel="noopener">Open your Drive dataset ↗</a>` : ""}<p id="syncStatus" class="sync-status">${esc(syncMessage)}</p><details><summary class="text-link">One-time Google setup instructions</summary><ol class="steps"><li>Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> on your laptop. Create a project called BottleCapture.</li><li>Enable the <strong>Google Drive API</strong>.</li><li>Configure Google Auth Platform: your app name, contact email, and audience. For a personal external testing app, add your own Google email as a test user.</li><li>Create an OAuth client with application type <strong>Web application</strong>.</li><li>Add this exact <strong>Authorized JavaScript origin</strong>:<div class="filename">${esc(location.origin)}</div></li><li>Copy the client ID here, save it, and tap Connect Google Drive. No client secret or redirect URI is needed for this browser token flow.</li><li>Allow access to files this app creates. Take one pilot photo and confirm both its JPEG and JSON arrive before a full session.</li></ol><p class="tiny">Google may require additional consent-screen configuration. Your password stays with Google; access tokens stay in tab session storage until expiry or disconnect, separate from the dataset.</p></details></section><section class="panel"><h2>Local safety net</h2><p>Approved photos are saved in this browser before uploading. Keep this tab open until uploads finish. Safari may pause work when the phone locks.</p><div class="notice warn">Browser storage is not a permanent backup. Clearing website data can remove unexported photos. Private browsing is unsuitable for collection.</div><div class="actions"><button class="btn secondary" data-export="all">${icon("download")} Export all photos + labels</button><button class="btn secondary" id="csvExport">Labels CSV</button><button class="btn ghost" id="persistStorage">Request persistent storage</button></div><p id="storageStatus" class="tiny"></p><hr class="divider"><h3>Use it on your iPhone</h3><ol class="steps"><li>Open this site in <strong>Safari</strong> and sign in to access your private app.</li><li>Use Share → <strong>Add to Home Screen</strong> for quick access.</li><li>Allow camera access when prompted. Start with a pilot session.</li></ol><p class="tiny">This version requires the site to load online. If the connection drops while it is open, photos can stay locally queued. Reopen online and reconnect Drive to resume.</p><hr class="divider"><h3>What stays on your device?</h3><p class="tiny">Photos, measurements and setup notes are stored locally. Connecting Drive uploads approved photos and per-photo labels to your own account. This app uses no LLM API and does not train or run your prediction model.</p></section></div>`;
+  return `${header("Make the studio yours.", "Connect storage, protect your dataset and keep collecting.")}<div class="grid2"><section class="panel"><div class="bar"><h2>Google Drive</h2><span class="badge ${drive.connected() ? "" : "warn"}">${drive.connected() ? "Connected" : "Setup / reconnect"}</span></div><p>Save & Next uploads the approved photo and its measured-mass JSON record into the “BottleCapture Dataset” folder, yours or one shared with you.</p><form id="driveForm">${field("Google OAuth web client ID", "client", settingsCache.client || "", "A public client ID ending in .apps.googleusercontent.com. Never enter a client secret.")}<button class="btn secondary" type="submit">Save client ID</button></form><div class="actions"><button class="btn" id="connectDrive">${icon("cloud")} Connect Google Drive</button><button class="btn secondary" id="syncNow">Sync pending</button><button class="btn secondary" id="pullDrive">Load from Drive</button>${drive.connected() ? '<button class="btn ghost" id="disconnectDrive">Disconnect</button>' : ""}</div><p class="tiny">${settingsCache.email ? "Dataset account: " + esc(settingsCache.email) : "Connect once, then reconnect when Google’s access token expires."}</p>${settingsCache.root ? `<a class="text-link" href="https://drive.google.com/drive/folders/${encodeURIComponent(settingsCache.root)}" target="_blank" rel="noopener">Open your Drive dataset ↗</a>` : ""}<p id="syncStatus" class="sync-status">${esc(syncMessage)}</p><hr class="divider"><h3>Shared dataset folder</h3><p class="tiny">${settingsCache.rootInfo ? `Uploading into “${esc(settingsCache.rootInfo.name)}”, owned by ${esc(settingsCache.rootInfo.owners?.[0]?.emailAddress || "unknown")}.${settingsCache.rootInfo.capabilities?.canAddChildren === false ? " You only have view access: ask the owner to make you an Editor." : ""}` : "Connect Drive to see which dataset folder this device uses."} A folder someone shared with you is found automatically. To pick a different one, paste its Drive link.</p><form id="rootForm">${field("Dataset folder link (optional)", "root", "", "Example: https://drive.google.com/drive/folders/…")}<div class="actions"><button class="btn secondary small" type="submit">Use this folder</button>${settingsCache.datasetRoot ? '<button class="btn ghost small" type="button" id="clearRoot">Use automatic folder</button>' : ""}</div></form><details><summary class="text-link">Add a friend who captures on his own phone</summary><ol class="steps"><li>In Google Cloud Console → Google Auth Platform → Audience, add your friend’s Google email as a <strong>test user</strong>.</li><li>In Google Drive, share the “BottleCapture Dataset” folder with your friend as <strong>Editor</strong>.</li><li>Your friend opens this site, pastes the same client ID in Settings, and connects with his own Google account.</li><li>The app finds the shared folder. His photos upload into your folder and load on your devices. Each person can only retake or delete their own sessions.</li><li>His uploads use his own Google storage. Give his physical bottle its own instance ID (for example I02).</li></ol></details><details><summary class="text-link">One-time Google setup instructions</summary><ol class="steps"><li>Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> on your laptop. Create a project called BottleCapture.</li><li>Enable the <strong>Google Drive API</strong>.</li><li>Configure Google Auth Platform: your app name, contact email, and audience. For a personal external testing app, add your own Google email as a test user.</li><li>Create an OAuth client with application type <strong>Web application</strong>.</li><li>Add this exact <strong>Authorized JavaScript origin</strong>:<div class="filename">${esc(location.origin)}</div></li><li>Copy the client ID here, save it, and tap Connect Google Drive. No client secret or redirect URI is needed for this browser token flow.</li><li>Allow access to Google Drive. Full Drive access is needed so two Google accounts can work in one shared folder. The app only reads and writes inside the BottleCapture Dataset folder. Take one pilot photo and confirm both its JPEG and JSON arrive before a full session.</li></ol><p class="tiny">Google may require additional consent-screen configuration. Your password stays with Google; access tokens stay in tab session storage until expiry or disconnect, separate from the dataset.</p></details></section><section class="panel"><h2>Local safety net</h2><p>Approved photos are saved in this browser before uploading. Keep this tab open until uploads finish. Safari may pause work when the phone locks.</p><div class="notice warn">Browser storage is not a permanent backup. Clearing website data can remove unexported photos. Private browsing is unsuitable for collection.</div><div class="actions"><button class="btn secondary" data-export="all">${icon("download")} Export all photos + labels</button><button class="btn secondary" id="csvExport">Labels CSV</button><button class="btn ghost" id="persistStorage">Request persistent storage</button></div><p id="storageStatus" class="tiny"></p><hr class="divider"><h3>Use it on your iPhone</h3><ol class="steps"><li>Open this site in <strong>Safari</strong> and sign in to access your private app.</li><li>Use Share → <strong>Add to Home Screen</strong> for quick access.</li><li>Allow camera access when prompted. Start with a pilot session.</li></ol><p class="tiny">This version requires the site to load online. If the connection drops while it is open, photos can stay locally queued. Reopen online and reconnect Drive to resume.</p><hr class="divider"><h3>What stays on your device?</h3><p class="tiny">Photos, measurements and setup notes are stored locally. Connecting Drive uploads approved photos and per-photo labels to your own account. This app uses no LLM API and does not train or run your prediction model.</p></section></div>`;
 }
 function on(sel, event, fn) {
   $(sel)?.addEventListener(event, (e) => {
@@ -247,7 +256,7 @@ function on(sel, event, fn) {
 }
 function resumeSession(id) {
   current = runs.find((r) => r.id === id);
-  if (!current || current.archived) return;
+  if (!current || current.archived || foreign(current)) return;
   retake = null;
   retakeFill = null;
   const next = Array.from({ length: 11 }, (_, n) => n).find(
@@ -335,6 +344,10 @@ function startRetake(p) {
   const r = runs.find((r) => r.id === p.run);
   if (!r || r.archived)
     throw Error("Photos in archived attempts cannot be retaken.");
+  if (foreign(r))
+    throw Error(
+      "Only " + r.uploadedBy + " can retake photos in their session.",
+    );
   $("#modal").close();
   current = r;
   level = p.level;
@@ -527,6 +540,16 @@ function bind() {
     toast("Disconnected. Local photos are unchanged.");
   });
   on("#syncNow", "click", syncNow);
+  on("#rootForm", "submit", async (e) => {
+    e.preventDefault();
+    const v = new FormData(e.target).get("root").trim(),
+      id = (v.match(/folders\/([A-Za-z0-9_-]{10,})/) ||
+        v.match(/^([A-Za-z0-9_-]{10,})$/) ||
+        [])[1];
+    if (!id) throw Error("Paste a Google Drive folder link.");
+    await useRoot(id);
+  });
+  on("#clearRoot", "click", () => useRoot(null));
   on("#pullDrive", "click", () => pullNow());
   on("#persistStorage", "click", async () => {
     const ok = await navigator.storage?.persist?.();
@@ -541,7 +564,7 @@ function bindPhotos() {
       const p = photos.find((p) => p.id === b.dataset.photo),
         r = runs.find((r) => r.id === p.run),
         d = $("#modal");
-      d.innerHTML = `<h2>${grams(p.mass)} g water</h2><img src="${objectURL(p.blob)}" style="width:100%;max-height:50vh;object-fit:contain" alt="${esc(p.name)}"><p class="filename">${esc(p.path)}</p><p>${esc(r.background)} · ${esc(r.lighting)}<br>Surface: ${esc(p.visibility)} · ${p.width} × ${p.height}</p><div class="actions">${r.archived ? "" : '<button class="btn" id="retakePhoto">Retake this photo</button>'}<button class="btn secondary" id="downloadPhoto">Download JPEG</button><button class="btn ghost" id="closeModal">Close</button></div>${r.archived ? '<p class="tiny">Archived attempts are read-only.</p>' : '<p class="tiny">Retake replaces this photo locally and on Google Drive after you save the new one. Until then, nothing is deleted.</p>'}`;
+      d.innerHTML = `<h2>${grams(p.mass)} g water</h2><img src="${objectURL(p.blob)}" style="width:100%;max-height:50vh;object-fit:contain" alt="${esc(p.name)}"><p class="filename">${esc(p.path)}</p><p>${esc(r.background)} · ${esc(r.lighting)}<br>Surface: ${esc(p.visibility)} · ${p.width} × ${p.height}</p><div class="actions">${r.archived || foreign(r) ? "" : '<button class="btn" id="retakePhoto">Retake this photo</button>'}<button class="btn secondary" id="downloadPhoto">Download JPEG</button><button class="btn ghost" id="closeModal">Close</button></div>${foreign(r) ? `<p class="tiny">Uploaded by ${esc(r.uploadedBy)}. Only they can retake or delete it.</p>` : r.archived ? '<p class="tiny">Archived attempts are read-only.</p>' : '<p class="tiny">Retake replaces this photo locally and on Google Drive after you save the new one. Until then, nothing is deleted.</p>'}`;
       d.showModal();
       $("#closeModal").onclick = () => d.close();
       if ($("#retakePhoto"))
@@ -794,6 +817,20 @@ async function syncNow() {
     throw e;
   }
 }
+// Switch dataset folder. Saved folder IDs belong to the old folder, so forget them.
+// Photos already uploaded stay where they are.
+async function useRoot(id) {
+  if (photos.some((p) => !p.synced))
+    throw Error("Sync or export your pending photos before switching folders.");
+  await setting("datasetRoot", id || "");
+  for (const x of await all("settings"))
+    if (x.id.startsWith("folder:") || x.id === "driveRoot")
+      await remove("settings", x.id);
+  await loadSettings();
+  render();
+  toast(id ? "Dataset folder saved." : "Using the automatic dataset folder.");
+  if (drive.connected() && navigator.onLine) await pullNow();
+}
 let pulling = false;
 async function pullNow(quiet = false) {
   if (pulling) return;
@@ -831,6 +868,9 @@ async function loadSettings() {
     client: await setting("client"),
     email: await setting("driveEmail"),
     root: await setting("driveRoot"),
+    datasetRoot: await setting("datasetRoot"),
+    rootInfo:
+      drive.connected() && navigator.onLine ? await drive.rootInfo() : null,
   };
 }
 function download(blob, name) {

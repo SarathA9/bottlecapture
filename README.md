@@ -56,3 +56,10 @@ The live camera fills the screen and sizes the preview to the real video, so the
 Each browser keeps its own local copy. To see phone photos on the laptop, use the same Google account **and the same OAuth client ID** on both. Google's `drive.file` access only lets an app see files created with its own Cloud project, so a different client ID from another project cannot see the phone's uploads.
 
 When Drive is connected, the app loads the shared dataset on start and after Connect. You can also tap Load from Drive in Dataset or Settings. It downloads sessions and photos uploaded by other devices, replaces photos retaken elsewhere, and removes photos whose Drive files were deleted elsewhere. Photos this device has not uploaded yet are never removed. Every device reuses the existing BottleCapture Dataset folders instead of creating duplicates. Archived-attempt status is not stored on Drive, so an archived attempt appears as a normal session on other devices.
+
+## Capture with a friend (two Google accounts)
+1. In Google Cloud Console → Google Auth Platform → Audience, add the friend's Google email as a test user.
+2. In Google Drive, share the "BottleCapture Dataset" folder with the friend as Editor.
+3. The friend opens the site, pastes the same OAuth client ID, and connects with his own account.
+
+The app now requests full Drive access (`drive` scope), because `drive.file` cannot see files another account created. It only reads and writes inside the dataset folder. A folder shared with you is found automatically; Settings also accepts a pasted folder link. The friend's photos are stored in your folder but count against his storage. Sessions uploaded by another account are view-only: only the uploader can continue, retake or delete them. Everyone must reconnect once after this update.

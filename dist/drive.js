@@ -12,6 +12,10 @@ let token = "",
   expires = 0,
   busy = false;
 export const connected = () => !!token && Date.now() < expires;
+// Full Drive access lets two Google accounts work in one shared dataset folder.
+// (drive.file only sees files this account created, so a friend's uploads were invisible.)
+export const SCOPE = "https://www.googleapis.com/auth/drive";
+const ROOT_NAME = "BottleCapture Dataset";
 const sessionKey = "bottlecapture-drive-session";
 function clearSession() {
   token = "";
@@ -24,7 +28,7 @@ function saveSession(clientId) {
   try {
     globalThis.sessionStorage?.setItem(
       sessionKey,
-      JSON.stringify({ token, expires, clientId }),
+      JSON.stringify({ token, expires, clientId, scope: SCOPE }),
     );
   } catch {}
 }
@@ -36,6 +40,7 @@ export async function restore(clientId) {
     if (
       !saved ||
       saved.clientId !== clientId ||
+      saved.scope !== SCOPE ||
       typeof saved.token !== "string" ||
       !Number.isFinite(saved.expires) ||
       saved.expires <= Date.now()
@@ -66,9 +71,15 @@ export async function connect(clientId) {
   return new Promise((resolve, reject) => {
     const c = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
-      scope: "https://www.googleapis.com/auth/drive.file",
+      scope: SCOPE,
       callback: async (r) => {
         if (r.error) return reject(Error(r.error_description || r.error));
+        if (google.accounts.oauth2.hasGrantedAllScopes?.(r, SCOPE) === false)
+          return reject(
+            Error(
+              "Google Drive access was not allowed. Connect again and tick the Drive access box, so the shared dataset folder can be used.",
+            ),
+          );
         token = r.access_token;
         expires = Date.now() + (Number(r.expires_in) - 60) * 1000;
         try {
@@ -202,10 +213,40 @@ async function ensureFile(id, meta, blob) {
     throw e;
   }
 }
+// Which "BottleCapture Dataset" folder to use, in order:
+// 1. a folder link pasted in Settings, 2. a folder someone shared with this account,
+// 3. this account's own folder.
+export async function findRoot() {
+  const picked = await setting("datasetRoot");
+  if (picked) return picked;
+  const shared = await list(
+    `name = ${quote(ROOT_NAME)} and mimeType = '${FOLDER}' and sharedWithMe = true and trashed = false`,
+    "id,createdTime",
+  );
+  shared.sort((a, b) =>
+    (a.createdTime || "").localeCompare(b.createdTime || ""),
+  );
+  return shared[0]?.id || (await findFolder(ROOT_NAME));
+}
+export async function rootInfo() {
+  const id = await setting("folder:root");
+  if (!id || !connected()) return null;
+  try {
+    return await api(
+      "/files/" +
+        id +
+        "?fields=id,name,owners(emailAddress),capabilities(canAddChildren)",
+    );
+  } catch {
+    return null;
+  }
+}
 async function folder(key, name, parent) {
   let id = await setting("folder:" + key);
   if (!id) {
-    id = (await findFolder(name, parent)) || (await nextId());
+    id =
+      (key === "root" ? await findRoot() : await findFolder(name, parent)) ||
+      (await nextId());
     await setting("folder:" + key, id);
   }
   const f = await ensureFile(id, {
@@ -241,7 +282,8 @@ export async function emptyTrash(onStatus = () => {}) {
         body: JSON.stringify({ trashed: true }),
       });
     } catch (e) {
-      if (e.status !== 404) throw e;
+      // 404: already gone. 403: owned by someone else in the shared folder; only they can remove it.
+      if (e.status !== 404 && e.status !== 403) throw e;
     }
     await unqueueTrash(ids[i]);
   }
@@ -253,6 +295,20 @@ export const pendingTrash = async () => (await trashQueue()).length;
 // Also mirrors changes made elsewhere: retaken photos are replaced, and photos whose
 // Drive files were deleted (moved to Trash) are removed here. Photos that this
 // device has not uploaded yet are never touched.
+// Children of many folders, in chunks so the query stays short.
+async function childrenOf(parents, extra, fields) {
+  const out = [];
+  for (let i = 0; i < parents.length; i += 25) {
+    const ps = parents
+      .slice(i, i + 25)
+      .map((p) => `${quote(p)} in parents`)
+      .join(" or ");
+    out.push(
+      ...(await list(`(${ps}) and ${extra} and trashed = false`, fields)),
+    );
+  }
+  return out;
+}
 export async function pull(onStatus = () => {}) {
   return exclusive(async () => {
     if (!connected()) throw Error("Connect Google Drive to load your dataset.");
@@ -267,7 +323,7 @@ export async function pull(onStatus = () => {}) {
       );
       if (!f || f.trashed) root = null;
     }
-    root = root || (await findFolder("BottleCapture Dataset"));
+    root = root || (await findRoot());
     const result = { added: 0, replaced: 0, removed: 0, skipped: 0 };
     if (!root) {
       onStatus("No BottleCapture Dataset folder on this Google Drive yet.");
@@ -275,14 +331,22 @@ export async function pull(onStatus = () => {}) {
     }
     await setting("folder:root", root);
     await setting("driveRoot", root);
-    const folders = new Map(
-      (
-        await list(
-          `mimeType = '${FOLDER}' and trashed = false`,
-          "id,name,parents",
-        )
-      ).map((f) => [f.id, f]),
-    );
+    // Walk only the dataset tree: root → bottle → instance → session → level.
+    const folders = new Map(),
+      isFolder = `mimeType = '${FOLDER}'`;
+    let layer = [root];
+    for (let depth = 0; depth < 4 && layer.length; depth++) {
+      const found = await childrenOf(
+        layer,
+        isFolder,
+        depth === 2
+          ? "id,name,parents,owners(emailAddress)"
+          : "id,name,parents",
+      );
+      for (const f of found) folders.set(f.id, f);
+      layer = found.map((f) => f.id);
+    }
+    const levelIds = layer;
     // Returns [level, session, instance, bottle] folders when id is a level folder in this dataset.
     const chain = (id) => {
       const out = [];
@@ -294,20 +358,30 @@ export async function pull(onStatus = () => {}) {
         out.push(f);
       return out.length === 4 && out[3].parents?.includes(root) ? out : null;
     };
-    const allLabels = await list(
-      "mimeType = 'application/json' and trashed = false",
-      "id,name,parents,size",
-    );
-    const liveLabels = new Set(allLabels.map((f) => f.id));
-    const labels = allLabels.filter((f) => chain(f.parents?.[0]));
+    const labels = (
+      await childrenOf(
+        levelIds,
+        "mimeType = 'application/json'",
+        "id,name,parents,size",
+      )
+    ).filter((f) => chain(f.parents?.[0]));
+    const liveLabels = new Set(labels.map((f) => f.id));
     const images = new Map(
       (
-        await list(
-          "mimeType = 'image/jpeg' and trashed = false",
+        await childrenOf(
+          levelIds,
+          "mimeType = 'image/jpeg'",
           "id,name,parents,size",
         )
       ).map((f) => [f.parents?.[0] + "/" + f.name, f]),
     );
+    // Who uploaded each session, so other people's sessions stay view-only here.
+    for (const r of await all("runs")) {
+      const sess = await setting("folder:" + r.id),
+        by = folders.get(sess)?.owners?.[0]?.emailAddress;
+      if (by && r.uploadedBy !== by)
+        await put("runs", { ...r, uploadedBy: by });
+    }
     const local = await all("photos"),
       known = new Set(local.map((p) => p.cloud?.label).filter(Boolean)),
       fresh = labels.filter((f) => !known.has(f.id));
@@ -346,6 +420,8 @@ export async function pull(onStatus = () => {}) {
       }
       const [lvlF, sessF, instF, botF] = chain(f.parents[0]);
       let r = await get("runs", runId);
+      if (r && !r.uploadedBy && sessF.owners?.[0]?.emailAddress)
+        r.uploadedBy = sessF.owners[0].emailAddress;
       if (!r) {
         r = {
           id: runId,
@@ -362,6 +438,7 @@ export async function pull(onStatus = () => {}) {
           created: label.taken_at,
           fills: {},
           importedFromDrive: new Date().toISOString(),
+          uploadedBy: sessF.owners?.[0]?.emailAddress,
         };
       }
       if (label.taken_at && label.taken_at < r.created)
@@ -404,6 +481,15 @@ export async function pull(onStatus = () => {}) {
     // Deleted or retaken on another device: the old Drive record is gone or in Trash.
     for (const p of await all("photos"))
       if (p.synced && p.cloud?.label && !liveLabels.has(p.cloud.label)) {
+        // Only remove when Drive confirms the file is gone or in Trash,
+        // not just outside the folder this device is using now.
+        const f = await api(
+          "/files/" + p.cloud.label + "?fields=id,trashed",
+        ).catch((e) => {
+          if (e.status === 404) return null;
+          throw e;
+        });
+        if (f && !f.trashed) continue;
         await remove("photos", p.id);
         result.removed++;
       }

@@ -37,6 +37,8 @@ await assert.rejects(addPhoto({ ...p, mass: 900 }));
 assert.equal((await get("photos", p.id)).mass, 224.7);
 assert.equal(await (await get("photos", p.id)).blob.text(), "original-photo");
 const files = new Map();
+// Which Google account the mock is serving.
+let me = "test@example.invalid";
 let sequence = 0,
   imageCreates = 0,
   failLabel = true;
@@ -62,8 +64,9 @@ globalThis.fetch = async (url, opts = {}) => {
   if (path.endsWith("/about"))
     return response({
       user: {
-        permissionId: "test-owner",
-        emailAddress: "test@example.invalid",
+        permissionId:
+          me === "test@example.invalid" ? "test-owner" : "friend-owner",
+        emailAddress: me,
       },
     });
   if (path.endsWith("/generateIds"))
@@ -76,11 +79,17 @@ globalThis.fetch = async (url, opts = {}) => {
     const match = (f) =>
       terms.every((t) => {
         let m;
+        if ((m = t.match(/^\((.*)\)$/)))
+          return m[1].split(" or ").some((x) => {
+            const id = x.match(/^'(.*)' in parents$/)[1];
+            return !!f.parents?.includes(id);
+          });
+        if (t === "sharedWithMe = true") return !!f.sharedWith?.includes(me);
         if ((m = t.match(/^name = '(.*)'$/))) return f.name === m[1];
         if ((m = t.match(/^mimeType = '(.*)'$/))) return f.mimeType === m[1];
         if ((m = t.match(/^'(.*)' in parents$/)))
           return m[1] === "root"
-            ? !f.parents?.length
+            ? !f.parents?.length && f.owners[0].emailAddress === me
             : !!f.parents?.includes(m[1]);
         if (t === "trashed = false") return !trashed(f);
         throw Error("Unsupported test query " + t);
@@ -97,6 +106,11 @@ globalThis.fetch = async (url, opts = {}) => {
   if (method === "PATCH") {
     const id = path.split("/").pop();
     if (!files.has(id)) return response({ error: { message: "missing" } }, 404);
+    if (files.get(id).owners[0].emailAddress !== me)
+      return response(
+        { error: { message: "insufficientFilePermissions" } },
+        403,
+      );
     const f = { ...files.get(id), ...JSON.parse(opts.body) };
     files.set(id, f);
     return response(f);
@@ -122,6 +136,7 @@ globalThis.fetch = async (url, opts = {}) => {
       name: meta.name,
       mimeType: meta.mimeType,
       parents: meta.parents || [],
+      owners: [{ emailAddress: me }],
       createdTime: new Date(Date.now() + sequence).toISOString(),
       data,
       ...(size === undefined ? {} : { size: String(size) }),
@@ -390,6 +405,7 @@ console.log(
   files.get(old.cloud.label).trashed = true;
   const lvl = files.get(old.cloud.label).parents[0];
   files.set("retakeImg", {
+    owners: [{ emailAddress: me }],
     id: "retakeImg",
     name: old.name,
     mimeType: "image/jpeg",
@@ -403,6 +419,7 @@ console.log(
     water_mass_g: 301,
   });
   files.set("retakeLbl", {
+    owners: [{ emailAddress: me }],
     id: "retakeLbl",
     name: old.name.replace(".jpg", ".json"),
     mimeType: "application/json",
@@ -436,5 +453,114 @@ console.log(
   assert.ok(await get("photos", "run7:1:0"));
   console.log(
     "PASS: second device loads Drive sessions, reuses folders, mirrors retakes and deletes, keeps unsent photos.",
+  );
+}
+
+// Two Google accounts share one dataset folder.
+{
+  const db = await import("../dist/db.js");
+  const wipe = async () => {
+    for (const store of ["runs", "photos", "settings"])
+      for (const x of await all(store)) await db.remove(store, x.id);
+  };
+  // Sarath's account owns the dataset and has one session with a photo.
+  await db.put("runs", {
+    ...r,
+    id: "runS",
+    session: "S10",
+    bottle: "B01",
+    fills: {},
+  });
+  await addPhoto({
+    ...p,
+    id: "runS:2:0",
+    run: "runS",
+    level: 2,
+    name: "B01_S10_L02_A_01.jpg",
+    blob: new Blob(["sarath"], { type: "image/jpeg" }),
+  });
+  await sync();
+  const sarathRoot = await db.setting("folder:root");
+  const sarathFolder = await db.setting("folder:runS");
+  // Sarath shares the root folder with his friend (done in Google Drive).
+  files.get(sarathRoot).sharedWith = ["friend@example.invalid"];
+  const sarathDevice = {};
+  for (const store of ["runs", "photos", "settings"])
+    sarathDevice[store] = await all(store);
+
+  // Friend's phone: new browser, his own Google account.
+  await wipe();
+  me = "friend@example.invalid";
+  await connect("test.apps.googleusercontent.com");
+  await drv.pull();
+  assert.equal(
+    await db.setting("folder:root"),
+    sarathRoot,
+    "friend finds the shared folder",
+  );
+  assert.equal((await get("runs", "runS")).uploadedBy, "test@example.invalid");
+  await db.put("runs", {
+    ...r,
+    id: "runF",
+    session: "S11",
+    bottle: "B01",
+    instance: "I02",
+    fills: {},
+  });
+  await addPhoto({
+    ...p,
+    id: "runF:3:0",
+    run: "runF",
+    level: 3,
+    name: "B01_I02_S11_L03_A_01.jpg",
+    blob: new Blob(["friend"], { type: "image/jpeg" }),
+  });
+  await sync();
+  const friendImg = (await get("photos", "runF:3:0")).cloud.image;
+  assert.equal(
+    files.get(friendImg).owners[0].emailAddress,
+    "friend@example.invalid",
+  );
+  assert.equal(
+    [...files.values()].filter((f) => f.name === "BottleCapture Dataset")
+      .length,
+    1,
+    "no second root",
+  );
+  assert.equal(
+    [...files.values()].filter(
+      (f) => f.name === "B01" && f.parents.includes(sarathRoot),
+    ).length,
+    1,
+    "reuses B01",
+  );
+  // The friend cannot trash Sarath's session: the job is dropped instead of blocking sync.
+  await drv.exclusive(async () => {
+    await db.deleteRun("runS");
+    await drv.emptyTrash();
+  });
+  assert.equal(files.get(sarathFolder).trashed, false);
+  assert.deepEqual(await db.trashQueue(), []);
+  await sync();
+
+  // Back on Sarath's device: he loads his friend's photos.
+  await wipe();
+  for (const store of ["runs", "photos", "settings"])
+    for (const x of sarathDevice[store]) await db.put(store, x);
+  me = "test@example.invalid";
+  await connect("test.apps.googleusercontent.com");
+  await drv.pull();
+  const fromFriend = await get("photos", "runF:3:0");
+  assert.equal(await fromFriend.blob.text(), "friend");
+  assert.equal(
+    (await get("runs", "runF")).uploadedBy,
+    "friend@example.invalid",
+  );
+  assert.ok(
+    await get("photos", "runS:2:0"),
+    "Sarath's own photo is still here",
+  );
+  console.log(
+    "PASS: shared folder: friend finds and uploads into it, cannot trash others' files, owner loads friend's photos.",
   );
 }
