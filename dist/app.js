@@ -213,7 +213,7 @@ function shootPage() {
   if (shot === undefined)
     return `${header("Level complete.", "All views for this fill are saved locally.")}<section class="panel"><h2>${level * 10}% · ${grams(f.mass)} g water</h2><p>Choose the next fill level and weigh it before taking more photos.</p><button class="btn" id="backSession">Choose next level ${icon("arrow")}</button><p class="tiny">${photos.filter((p) => p.run === r.id && p.level === level && !p.synced).length} photos at this level still need a Drive upload or local export.</p></section>`;
   if (!verified)
-    return `${header(retake ? `Retake · ${level * 10}% fill · view ${shots[shot][0]}` : `${level * 10}% fill · weigh first.`, retake ? `Saved photo mass: ${grams(f.mass)} g water (${grams(f.gross)} g on the balance). Fill the bottle back to this level first.` : `Approximate target: ${grams((r.reference * level) / 10)} g of water. Keep the label on.`)}<div class="grid2"><section class="panel"><h2>${retake ? "Weigh the bottle for the retake" : f ? "Confirm the same fill" : "Record the actual mass"}</h2><p>${retake ? "Refill to the saved reading and weigh with the same cap. If the reading matches within one scale step, the retake keeps the original label. If not, you can confirm the new reading and only this photo gets the new measured mass." : f ? "Reweigh without adding or removing water. The reading must match this fill within one scale step. If it changed, use a new session." : "Weigh the bottle with water and its cap. Enter exactly what the balance shows."}</p><form id="massForm">${field("Filled bottle + cap (g)", "gross", "", "Empty bottle + cap: " + grams(r.tare) + " g", "decimal")}<div id="massPreview" class="notice">Your net water mass will appear here.</div><label class="check"><input type="checkbox" required>The water is still, the outside is dry, and the balance reading is stable.</label><button class="btn" type="submit" id="massSubmit">Confirm & start photos ${icon("arrow")}</button></form><button class="text-link" id="backSession">${retake ? "← Cancel retake" : "← Back to fill levels"}</button></section><section class="panel soft"><h3>Keep it consistent</h3><ol class="steps"><li>Weigh with the <strong>same cap</strong> each time.</li><li>Place the bottle on your photography surface.</li><li>Keep the scale and mass notes <strong>outside the frame</strong>.</li><li>Do not alter the fill between the ${countShots(r)} views.</li></ol><div class="notice warn">If the water line is hidden by the label, keep the photo. You will mark its visibility during review.</div></section></div>`;
+    return `${header(retake ? `Retake · ${level * 10}% fill · view ${shots[shot][0]}` : `${level * 10}% fill · weigh first.`, retake ? `Saved photo mass: ${grams(f.mass)} g water (${grams(f.gross)} g on the balance). Skip weighing if the water has not changed.` : `Approximate target: ${grams((r.reference * level) / 10)} g of water. Keep the label on.`)}<div class="grid2"><section class="panel"><h2>${retake ? "Has the water changed since this photo?" : f ? "Confirm the same fill" : "Record the actual mass"}</h2>${retake ? `<div class="notice">If you have not added or poured out water since the original photo, keep the saved mass and go straight to the camera.</div><label class="check"><input type="checkbox" id="sameWaterOk">I have not added or removed water since the original photo.</label><button class="btn" type="button" id="sameWater" disabled>Keep ${grams(f.mass)} g and retake ${icon("arrow")}</button><hr class="divider"><h3>Water changed? Weigh again</h3>` : ""}<p>${retake ? "Refill to the saved reading and weigh with the same cap. If it matches within one scale step, the retake keeps the original label. If not, you can confirm the new reading, and only this photo gets the new measured mass." : f ? "Reweigh without adding or removing water. The reading must match this fill within one scale step. If it changed, use a new session." : "Weigh the bottle with water and its cap. Enter exactly what the balance shows."}</p><form id="massForm">${field("Filled bottle + cap (g)", "gross", "", "Empty bottle + cap: " + grams(r.tare) + " g", "decimal")}<div id="massPreview" class="notice">Your net water mass will appear here.</div><label class="check"><input type="checkbox" required>The water is still, the outside is dry, and the balance reading is stable.</label><button class="btn" type="submit" id="massSubmit">Confirm & start photos ${icon("arrow")}</button></form><button class="text-link" id="backSession">${retake ? "← Cancel retake" : "← Back to fill levels"}</button></section><section class="panel soft"><h3>Keep it consistent</h3><ol class="steps"><li>Weigh with the <strong>same cap</strong> each time.</li><li>Place the bottle on your photography surface.</li><li>Keep the scale and mass notes <strong>outside the frame</strong>.</li><li>Do not alter the fill between the ${countShots(r)} views.</li></ol><div class="notice warn">If the water line is hidden by the label, keep the photo. You will mark its visibility during review.</div></section></div>`;
   const s = shots[shot];
   return `${header(`${retake ? "Retake · " : ""}Shot ${shot + 1} of ${countShots(r)} · ${s[0]}`, `${level * 10}% target · Actual water: ${grams(f.mass)} g`, `<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause session"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">Your next research image.</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use iPhone Camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn secondary" style="width:100%;margin:12px 0;cursor:pointer">${icon("capture")} Use iPhone Camera / choose photo<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label><p class="tiny">The live camera may use a lower resolution. Use iPhone Camera for the device’s still-photo capture. Review image dimensions before saving.</p><div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">${esc(s[3])}</div><h2 class="instruction">${s[1]}</h2><p>${s[2]}</p>${angleDiagram(shot)}<ol class="steps"><li>Original label on. Bottle upright.</li><li>Cap and base visible, with a small margin.</li><li>Tap to focus in the iPhone camera. Avoid glare and motion blur.</li><li>No scale, mass notes or measuring jug in view.</li></ol><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div><p class="tiny">${photoPath(r, level, shot).split("/").slice(0, -1).join(" / ")}</p></section></div>`;
 }
@@ -446,6 +446,17 @@ function bind() {
     verified = true;
     render();
   });
+  on(
+    "#sameWaterOk",
+    "change",
+    (e) => ($("#sameWater").disabled = !e.target.checked),
+  );
+  on("#sameWater", "click", () => {
+    if (!retake || !$("#sameWaterOk").checked) return;
+    retakeFill = null;
+    verified = true;
+    render();
+  });
   on("#startCamera", "click", startCamera);
   on("#fileCamera", "click", () => {
     filePickerOpen = true;
@@ -545,18 +556,30 @@ function bindPhotos() {
     };
 }
 // Size the live box to the video's real aspect ratio, so the guide frame sits on the image.
+// The part of the video frame that becomes the photo. If the phone is upright but the
+// camera stream is sideways, use a centred 3:4 portrait crop, so every photo is portrait.
+function liveCrop(v) {
+  const vw = v.videoWidth,
+    vh = v.videoHeight;
+  if (window.innerHeight >= window.innerWidth && vw > vh) {
+    const w = Math.round((vh * 3) / 4);
+    return { sx: Math.round((vw - w) / 2), sy: 0, w, h: vh, cropped: true };
+  }
+  return { sx: 0, sy: 0, w: vw, h: vh, cropped: false };
+}
 function fitLive() {
   const v = $("#video"),
     wrap = $("#liveWrap"),
     box = $("#viewfinder");
   if (!v || !wrap || !box || !v.videoWidth) return;
-  const w = box.clientWidth,
-    h = box.clientHeight,
-    scale = Math.min(w / v.videoWidth, h / v.videoHeight);
-  wrap.style.width = Math.floor(v.videoWidth * scale) + "px";
-  wrap.style.height = Math.floor(v.videoHeight * scale) + "px";
+  const c = liveCrop(v),
+    scale = Math.min(box.clientWidth / c.w, box.clientHeight / c.h);
+  wrap.style.width = Math.floor(c.w * scale) + "px";
+  wrap.style.height = Math.floor(c.h * scale) + "px";
+  // "cover" shows exactly the centred crop that will be saved.
+  v.style.objectFit = c.cropped ? "cover" : "contain";
   const label = $("#camLabel");
-  if (label) label.textContent = `LIVE · ${v.videoWidth} × ${v.videoHeight}`;
+  if (label) label.textContent = `LIVE · ${c.w} × ${c.h}`;
 }
 window.addEventListener("resize", () => requestAnimationFrame(fitLive));
 async function openStream(video) {
@@ -637,10 +660,11 @@ async function captureLive() {
   const v = $("#video");
   try {
     if (!stream || !v.videoWidth) return;
-    const c = document.createElement("canvas");
-    c.width = v.videoWidth;
-    c.height = v.videoHeight;
-    c.getContext("2d").drawImage(v, 0, 0);
+    const k = liveCrop(v),
+      c = document.createElement("canvas");
+    c.width = k.w;
+    c.height = k.h;
+    c.getContext("2d").drawImage(v, k.sx, k.sy, k.w, k.h, 0, 0, k.w, k.h);
     const blob = await new Promise((resolve) =>
       c.toBlob(resolve, "image/jpeg", 0.96),
     );
