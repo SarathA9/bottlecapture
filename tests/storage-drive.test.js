@@ -94,24 +94,39 @@ globalThis.fetch = async (url, opts = {}) => {
         if (t === "trashed = false") return !trashed(f);
         throw Error("Unsupported test query " + t);
       });
-    return response({ files: [...files.values()].filter(match) });
+    return response({
+      files: [...files.values()]
+        .filter(match)
+        .map((f) => ({ ...f, ownedByMe: f.owners[0].emailAddress === me })),
+    });
   }
   if (method === "GET") {
     const id = path.split("/").pop();
     if (!files.has(id)) return response({ error: { message: "missing" } }, 404);
     const f = files.get(id);
     if (u.searchParams.get("alt") === "media") return new Response(f.data);
-    return response({ ...f, trashed: trashed(f) });
+    return response({
+      ...f,
+      trashed: trashed(f),
+      ownedByMe: f.owners[0].emailAddress === me,
+    });
   }
   if (method === "PATCH") {
     const id = path.split("/").pop();
     if (!files.has(id)) return response({ error: { message: "missing" } }, 404);
-    if (files.get(id).owners[0].emailAddress !== me)
+    const body = JSON.parse(opts.body),
+      old = files.get(id);
+    // In a shared My Drive folder only the owner may trash; editors may change metadata.
+    if (body.trashed && old.owners[0].emailAddress !== me)
       return response(
         { error: { message: "insufficientFilePermissions" } },
         403,
       );
-    const f = { ...files.get(id), ...JSON.parse(opts.body) };
+    const f = {
+      ...old,
+      ...body,
+      appProperties: { ...old.appProperties, ...body.appProperties },
+    };
     files.set(id, f);
     return response(f);
   }
@@ -268,6 +283,9 @@ assert.equal(await get("runs", "run4"), undefined);
 assert.equal((await all("photos")).filter((x) => x.run === "run4").length, 0);
 assert.equal(await setting("folder:run4"), undefined);
 assert.equal(await setting("folder:run4/2"), undefined);
+// Marked deleted for every collaborator, then trashed by the owner's next Drive check.
+assert.ok(files.get(sessionFolder).appProperties.bottlecaptureDeleted);
+await drv.pull();
 assert.equal(files.get(sessionFolder).trashed, true);
 assert.equal((await all("photos")).filter((x) => x.run === "run1").length, 1);
 assert.deepEqual(await trashQueue(), []);
@@ -286,6 +304,8 @@ await deleteRun("run5");
 assert.deepEqual(await trashQueue(), [folder5]);
 assert.equal(files.get(folder5).trashed, false);
 await sync();
+assert.ok(files.get(folder5).appProperties.bottlecaptureDeleted);
+await drv.pull();
 assert.equal(files.get(folder5).trashed, true);
 assert.deepEqual(await trashQueue(), []);
 console.log(
@@ -456,49 +476,73 @@ console.log(
   );
 }
 
-// Two Google accounts share one dataset folder.
+// Two Google accounts edit one central dataset, like two people on one git branch.
 {
   const db = await import("../dist/db.js");
-  const wipe = async () => {
+  const devices = {};
+  const save = async (name) => {
+    devices[name] = {};
+    for (const store of ["runs", "photos", "settings"])
+      devices[name][store] = await all(store);
+  };
+  const open = async (name, account) => {
     for (const store of ["runs", "photos", "settings"])
       for (const x of await all(store)) await db.remove(store, x.id);
+    for (const store of ["runs", "photos", "settings"])
+      for (const x of devices[name]?.[store] || []) await db.put(store, x);
+    me = account;
+    await connect("test.apps.googleusercontent.com");
   };
-  // Sarath's account owns the dataset and has one session with a photo.
+  const SARATH = "test@example.invalid",
+    FRIEND = "friend@example.invalid";
+  const photo = (run, level, shot, text) => ({
+    ...p,
+    id: `${run}:${level}:${shot}`,
+    run,
+    level,
+    shot,
+    name: `B01_${run}_L0${level}_${shot}.jpg`,
+    blob: new Blob([text], { type: "image/jpeg" }),
+  });
+
+  // Sarath's phone: one session with two photos, then he shares the folder.
+  await open("sarath", SARATH);
   await db.put("runs", {
     ...r,
     id: "runS",
     session: "S10",
     bottle: "B01",
-    fills: {},
+    fills: { 2: { gross: 700, mass: 200 } },
   });
-  await addPhoto({
-    ...p,
-    id: "runS:2:0",
-    run: "runS",
-    level: 2,
-    name: "B01_S10_L02_A_01.jpg",
-    blob: new Blob(["sarath"], { type: "image/jpeg" }),
-  });
+  await addPhoto(photo("runS", 2, 0, "sarath-0"));
+  await addPhoto(photo("runS", 2, 1, "sarath-1"));
   await sync();
-  const sarathRoot = await db.setting("folder:root");
-  const sarathFolder = await db.setting("folder:runS");
-  // Sarath shares the root folder with his friend (done in Google Drive).
-  files.get(sarathRoot).sharedWith = ["friend@example.invalid"];
-  const sarathDevice = {};
-  for (const store of ["runs", "photos", "settings"])
-    sarathDevice[store] = await all(store);
+  const root = await db.setting("folder:root");
+  files.get(root).sharedWith = [FRIEND];
+  await save("sarath");
 
-  // Friend's phone: new browser, his own Google account.
-  await wipe();
-  me = "friend@example.invalid";
-  await connect("test.apps.googleusercontent.com");
+  // Friend's phone, his own account: he sees Sarath's session and works in it.
+  await open("friend", FRIEND);
   await drv.pull();
   assert.equal(
     await db.setting("folder:root"),
-    sarathRoot,
-    "friend finds the shared folder",
+    root,
+    "friend uses the shared folder",
   );
-  assert.equal((await get("runs", "runS")).uploadedBy, "test@example.invalid");
+  assert.equal(await (await get("photos", "runS:2:0")).blob.text(), "sarath-0");
+  // He adds a photo to Sarath's session...
+  await addPhoto(photo("runS", 2, 2, "friend-2"));
+  // ...retakes one of Sarath's photos...
+  const old1 = await get("photos", "runS:2:1");
+  await drv.exclusive(() =>
+    db.replacePhoto({
+      ...old1,
+      blob: new Blob(["friend-retake-1"], { type: "image/jpeg" }),
+      synced: false,
+      cloud: undefined,
+    }),
+  );
+  // ...and starts his own session.
   await db.put("runs", {
     ...r,
     id: "runF",
@@ -507,60 +551,135 @@ console.log(
     instance: "I02",
     fills: {},
   });
-  await addPhoto({
-    ...p,
-    id: "runF:3:0",
-    run: "runF",
-    level: 3,
-    name: "B01_I02_S11_L03_A_01.jpg",
-    blob: new Blob(["friend"], { type: "image/jpeg" }),
-  });
+  await addPhoto(photo("runF", 3, 0, "friend-own"));
   await sync();
-  const friendImg = (await get("photos", "runF:3:0")).cloud.image;
-  assert.equal(
-    files.get(friendImg).owners[0].emailAddress,
-    "friend@example.invalid",
-  );
   assert.equal(
     [...files.values()].filter((f) => f.name === "BottleCapture Dataset")
       .length,
     1,
-    "no second root",
+    "one central root",
+  );
+  assert.ok(
+    files.get(old1.cloud.image).appProperties.bottlecaptureDeleted,
+    "Sarath's old photo marked deleted",
   );
   assert.equal(
-    [...files.values()].filter(
-      (f) => f.name === "B01" && f.parents.includes(sarathRoot),
-    ).length,
-    1,
-    "reuses B01",
+    files.get(old1.cloud.image).trashed,
+    false,
+    "only the owner can trash it",
   );
-  // The friend cannot trash Sarath's session: the job is dropped instead of blocking sync.
+  await save("friend");
+
+  // Sarath's phone: one check brings in all of his friend's changes.
+  await open("sarath", SARATH);
+  const res = await drv.pull();
+  assert.equal(
+    await (await get("photos", "runS:2:2")).blob.text(),
+    "friend-2",
+    "friend's new photo",
+  );
+  assert.equal(
+    await (await get("photos", "runS:2:1")).blob.text(),
+    "friend-retake-1",
+    "friend's retake",
+  );
+  assert.equal(
+    await (await get("photos", "runF:3:0")).blob.text(),
+    "friend-own",
+    "friend's session",
+  );
+  assert.equal(
+    files.get(old1.cloud.image).trashed,
+    true,
+    "owner device trashed the replaced photo",
+  );
+  assert.ok(res.added >= 2 && res.replaced >= 1);
+  // Sarath deletes the friend's session.
+  const f0 = await get("photos", "runF:3:0");
+  await drv.exclusive(async () => {
+    await db.deleteRun("runF");
+    await drv.emptyTrash();
+  });
+  await sync();
+  await save("sarath");
+
+  // Friend's phone: the deleted session disappears, and his own files go to his Trash.
+  await open("friend", FRIEND);
+  await drv.pull();
+  assert.equal(
+    await get("runs", "runF"),
+    undefined,
+    "session deleted by Sarath is gone here",
+  );
+  assert.equal(await get("photos", "runF:3:0"), undefined);
+  assert.equal(
+    files.get(f0.cloud.image).trashed,
+    true,
+    "friend's device trashed his own files",
+  );
+  assert.equal(
+    await (await get("photos", "runS:2:1")).blob.text(),
+    "friend-retake-1",
+  );
+
+  // Both retake the same slot at once: the newest upload wins on every device.
+  await save("friend");
+  const slot = await get("photos", "runS:2:0");
+  await drv.exclusive(() =>
+    db.replacePhoto({
+      ...slot,
+      blob: new Blob(["friend-first"], { type: "image/jpeg" }),
+      synced: false,
+      cloud: undefined,
+    }),
+  );
+  await sync();
+  await save("friend");
+  await open("sarath", SARATH);
+  // Sarath had not pulled yet; his own retake of the same slot uploads later, so it is newer.
+  const mine = await get("photos", "runS:2:0");
+  await drv.exclusive(() =>
+    db.replacePhoto({
+      ...mine,
+      blob: new Blob(["sarath-later"], { type: "image/jpeg" }),
+      synced: false,
+      cloud: undefined,
+    }),
+  );
+  await sync();
+  await drv.pull();
+  assert.equal(
+    await (await get("photos", "runS:2:0")).blob.text(),
+    "sarath-later",
+  );
+  await save("sarath");
+  await open("friend", FRIEND);
+  await drv.pull();
+  assert.equal(
+    await (await get("photos", "runS:2:0")).blob.text(),
+    "sarath-later",
+    "same result on both devices",
+  );
+
+  // A session deleted elsewhere while this device still has unsent photos in it: those are kept.
+  await addPhoto(photo("runS", 2, 3, "unsent"));
+  await save("friend");
+  await open("sarath", SARATH);
   await drv.exclusive(async () => {
     await db.deleteRun("runS");
     await drv.emptyTrash();
   });
-  assert.equal(files.get(sarathFolder).trashed, false);
-  assert.deepEqual(await db.trashQueue(), []);
-  await sync();
-
-  // Back on Sarath's device: he loads his friend's photos.
-  await wipe();
-  for (const store of ["runs", "photos", "settings"])
-    for (const x of sarathDevice[store]) await db.put(store, x);
-  me = "test@example.invalid";
-  await connect("test.apps.googleusercontent.com");
+  await save("sarath");
+  await open("friend", FRIEND);
   await drv.pull();
-  const fromFriend = await get("photos", "runF:3:0");
-  assert.equal(await fromFriend.blob.text(), "friend");
+  assert.ok(await get("photos", "runS:2:3"), "unsent photo is never removed");
+  await sync();
   assert.equal(
-    (await get("runs", "runF")).uploadedBy,
-    "friend@example.invalid",
-  );
-  assert.ok(
-    await get("photos", "runS:2:0"),
-    "Sarath's own photo is still here",
+    (await get("photos", "runS:2:3")).synced,
+    false,
+    "and is not uploaded into a deleted session",
   );
   console.log(
-    "PASS: shared folder: friend finds and uploads into it, cannot trash others' files, owner loads friend's photos.",
+    "PASS: two accounts edit one dataset: add, retake, delete in each other's sessions, newest retake wins, unsent photos kept.",
   );
 }

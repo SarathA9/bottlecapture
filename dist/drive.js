@@ -16,6 +16,9 @@ export const connected = () => !!token && Date.now() < expires;
 // (drive.file only sees files this account created, so a friend's uploads were invisible.)
 export const SCOPE = "https://www.googleapis.com/auth/drive";
 const ROOT_NAME = "BottleCapture Dataset";
+// Delete marker. In a shared My Drive folder only a file's owner can trash it, so any
+// collaborator marks a file or folder as deleted, and the owner's device trashes it later.
+const DELETED = "bottlecaptureDeleted";
 const sessionKey = "bottlecapture-drive-session";
 function clearSession() {
   token = "";
@@ -181,7 +184,9 @@ async function nextId() {
 }
 async function ensureFile(id, meta, blob) {
   try {
-    return await api("/files/" + id + "?fields=id,name,size,trashed");
+    return await api(
+      "/files/" + id + "?fields=id,name,size,trashed,appProperties",
+    );
   } catch (e) {
     if (e.status !== 404) throw e;
   }
@@ -199,7 +204,7 @@ async function ensureFile(id, meta, blob) {
         `\r\n--${boundary}--`,
       ]);
     return await api(
-      "/files?uploadType=multipart&fields=id,name,size,trashed",
+      "/files?uploadType=multipart&fields=id,name,size,trashed,appProperties",
       {
         upload: true,
         method: "POST",
@@ -209,7 +214,7 @@ async function ensureFile(id, meta, blob) {
     );
   } catch (e) {
     if (e.status === 409)
-      return api("/files/" + id + "?fields=id,name,size,trashed");
+      return api("/files/" + id + "?fields=id,name,size,trashed,appProperties");
     throw e;
   }
 }
@@ -258,6 +263,11 @@ async function folder(key, name, parent) {
     throw Error(
       "A dataset folder is in Google Drive Trash. Restore it before syncing.",
     );
+  if (f.appProperties?.[DELETED]) {
+    const e = Error(`“${name}” was deleted on another device.`);
+    e.code = "deleted";
+    throw e;
+  }
   return id;
 }
 // One queue for every Drive-changing job in this tab, plus Web Locks across tabs.
@@ -269,20 +279,35 @@ export function exclusive(fn) {
   chain = result.catch(() => {});
   return result;
 }
-// Move queued Drive files (deleted sessions, replaced photos) to Trash.
-// Trash keeps them recoverable for 30 days. Missing files are already gone.
+// Remove queued Drive items (deleted sessions, replaced photos) for everyone.
+// Each item is marked deleted first, which works for any collaborator. Files this
+// account owns then go straight to Trash (recoverable for 30 days). Folders are
+// trashed later by their owner, once nobody else's files are inside.
 export async function emptyTrash(onStatus = () => {}) {
   const ids = await trashQueue();
   for (let i = 0; i < ids.length; i++) {
     onStatus(`Removing old Drive files ${i + 1} of ${ids.length}`);
     try {
-      await api("/files/" + ids[i] + "?fields=id,trashed", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trashed: true }),
-      });
+      const f = await api(
+        "/files/" + ids[i] + "?fields=id,mimeType,ownedByMe,trashed",
+      );
+      if (!f.trashed) {
+        await api("/files/" + ids[i] + "?fields=id", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            appProperties: { [DELETED]: new Date().toISOString() },
+          }),
+        });
+        if (f.ownedByMe && f.mimeType !== FOLDER)
+          await api("/files/" + ids[i] + "?fields=id", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trashed: true }),
+          });
+      }
     } catch (e) {
-      // 404: already gone. 403: owned by someone else in the shared folder; only they can remove it.
+      // 404: already gone. 403: no edit access to this item; nothing more this device can do.
       if (e.status !== 404 && e.status !== 403) throw e;
     }
     await unqueueTrash(ids[i]);
@@ -312,7 +337,7 @@ async function childrenOf(parents, extra, fields) {
 export async function pull(onStatus = () => {}) {
   return exclusive(async () => {
     if (!connected()) throw Error("Connect Google Drive to load your dataset.");
-    onStatus("Looking for your dataset on Google Drive…");
+    onStatus("Checking Google Drive for changes…");
     let root = await setting("folder:root");
     if (root) {
       const f = await api("/files/" + root + "?fields=id,trashed").catch(
@@ -331,24 +356,20 @@ export async function pull(onStatus = () => {}) {
     }
     await setting("folder:root", root);
     await setting("driveRoot", root);
+    const fields =
+      "id,name,parents,size,createdTime,ownedByMe,appProperties,owners(emailAddress)";
     // Walk only the dataset tree: root → bottle → instance → session → level.
-    const folders = new Map(),
-      isFolder = `mimeType = '${FOLDER}'`;
+    const folders = new Map();
     let layer = [root];
     for (let depth = 0; depth < 4 && layer.length; depth++) {
-      const found = await childrenOf(
-        layer,
-        isFolder,
-        depth === 2
-          ? "id,name,parents,owners(emailAddress)"
-          : "id,name,parents",
-      );
+      const found = await childrenOf(layer, `mimeType = '${FOLDER}'`, fields);
       for (const f of found) folders.set(f.id, f);
       layer = found.map((f) => f.id);
     }
     const levelIds = layer;
-    // Returns [level, session, instance, bottle] folders when id is a level folder in this dataset.
-    const chain = (id) => {
+    const marked = (f) => !!f?.appProperties?.[DELETED];
+    // A folder and its parents up to (not including) the root.
+    const lineage = (id) => {
       const out = [];
       for (
         let f = folders.get(id);
@@ -356,32 +377,37 @@ export async function pull(onStatus = () => {}) {
         f = folders.get(f.parents?.[0])
       )
         out.push(f);
+      return out;
+    };
+    // [level, session, instance, bottle] for a level folder in this dataset.
+    const chain = (id) => {
+      const out = lineage(id);
       return out.length === 4 && out[3].parents?.includes(root) ? out : null;
     };
-    const labels = (
-      await childrenOf(
-        levelIds,
-        "mimeType = 'application/json'",
-        "id,name,parents,size",
-      )
-    ).filter((f) => chain(f.parents?.[0]));
-    const liveLabels = new Set(labels.map((f) => f.id));
-    const images = new Map(
-      (
-        await childrenOf(
-          levelIds,
-          "mimeType = 'image/jpeg'",
-          "id,name,parents,size",
-        )
-      ).map((f) => [f.parents?.[0] + "/" + f.name, f]),
-    );
-    // Who uploaded each session, so other people's sessions stay view-only here.
-    for (const r of await all("runs")) {
-      const sess = await setting("folder:" + r.id),
-        by = folders.get(sess)?.owners?.[0]?.emailAddress;
-      if (by && r.uploadedBy !== by)
-        await put("runs", { ...r, uploadedBy: by });
-    }
+    const files = [
+      ...(await childrenOf(levelIds, "mimeType = 'application/json'", fields)),
+      ...(await childrenOf(levelIds, "mimeType = 'image/jpeg'", fields)),
+    ].filter((f) => chain(f.parents?.[0]));
+    const gone = (f) => marked(f) || chain(f.parents[0]).some(marked);
+    // One photo slot = one filename in one level folder. If two people saved the
+    // same slot (for example both retook it), the newest upload wins.
+    const newest = (list) => {
+      const m = new Map();
+      for (const f of list) {
+        const k = f.parents[0] + "/" + f.name,
+          o = m.get(k);
+        if (!o || (f.createdTime || "") > (o.createdTime || "")) m.set(k, f);
+      }
+      return m;
+    };
+    const labels = [
+        ...newest(
+          files.filter((f) => f.name.endsWith(".json") && !gone(f)),
+        ).values(),
+      ],
+      images = newest(files.filter((f) => f.name.endsWith(".jpg") && !gone(f))),
+      inWalk = new Map(files.map((f) => [f.id, f])),
+      liveLabels = new Set(labels.map((f) => f.id));
     const local = await all("photos"),
       known = new Set(local.map((p) => p.cloud?.label).filter(Boolean)),
       fresh = labels.filter((f) => !known.has(f.id));
@@ -409,7 +435,7 @@ export async function pull(onStatus = () => {}) {
       }
       const existing = await get("photos", label.photo_id);
       if (existing && !existing.synced) {
-        // This device has its own unsent photo for the same slot. Keep it.
+        // This device has its own unsent photo for the same slot. Keep it; it uploads next.
         result.skipped++;
         continue;
       }
@@ -420,9 +446,7 @@ export async function pull(onStatus = () => {}) {
       }
       const [lvlF, sessF, instF, botF] = chain(f.parents[0]);
       let r = await get("runs", runId);
-      if (r && !r.uploadedBy && sessF.owners?.[0]?.emailAddress)
-        r.uploadedBy = sessF.owners[0].emailAddress;
-      if (!r) {
+      if (!r)
         r = {
           id: runId,
           bottle: label.bottle_id,
@@ -438,9 +462,8 @@ export async function pull(onStatus = () => {}) {
           created: label.taken_at,
           fills: {},
           importedFromDrive: new Date().toISOString(),
-          uploadedBy: sessF.owners?.[0]?.emailAddress,
         };
-      }
+      r.uploadedBy ||= sessF.owners?.[0]?.emailAddress;
       if (label.taken_at && label.taken_at < r.created)
         r.created = label.taken_at;
       if (!r.fills[level])
@@ -475,31 +498,73 @@ export async function pull(onStatus = () => {}) {
         synced: true,
         syncedAt: new Date().toISOString(),
         cloud: { image: img.id, label: f.id },
+        ...(existing ? { retakenAt: new Date().toISOString() } : {}),
       });
       existing ? result.replaced++ : result.added++;
     }
-    // Deleted or retaken on another device: the old Drive record is gone or in Trash.
-    for (const p of await all("photos"))
-      if (p.synced && p.cloud?.label && !liveLabels.has(p.cloud.label)) {
-        // Only remove when Drive confirms the file is gone or in Trash,
-        // not just outside the folder this device is using now.
+    // Deleted on another device. Unsent photos are never touched.
+    for (const p of await all("photos")) {
+      if (!p.synced || !p.cloud?.label || liveLabels.has(p.cloud.label))
+        continue;
+      const seen = inWalk.get(p.cloud.label);
+      if (seen) {
+        if (!gone(seen)) continue;
+      } else {
+        // Not in this dataset folder: remove only if Drive confirms it is gone.
         const f = await api(
-          "/files/" + p.cloud.label + "?fields=id,trashed",
+          "/files/" + p.cloud.label + "?fields=id,trashed,appProperties",
         ).catch((e) => {
           if (e.status === 404) return null;
           throw e;
         });
-        if (f && !f.trashed) continue;
-        await remove("photos", p.id);
-        result.removed++;
+        if (f && !f.trashed && !marked(f)) continue;
       }
-    const left = new Set((await all("photos")).map((p) => p.run));
-    for (const r of await all("runs"))
-      if (r.importedFromDrive && !left.has(r.id)) await remove("runs", r.id);
+      await remove("photos", p.id);
+      result.removed++;
+    }
+    // Sessions deleted elsewhere disappear here, unless this device has unsent photos in them.
+    const left = await all("photos");
+    for (const r of await all("runs")) {
+      const sessId = await setting("folder:" + r.id),
+        sess = folders.get(sessId),
+        mine = left.filter((p) => p.run === r.id);
+      if (sess?.owners?.[0]?.emailAddress && !r.uploadedBy)
+        await put("runs", { ...r, uploadedBy: sess.owners[0].emailAddress });
+      const deleted = !!sess && lineage(sessId).some(marked);
+      if (
+        (deleted || (r.importedFromDrive && !mine.length)) &&
+        mine.every((p) => p.synced)
+      ) {
+        for (const p of mine) await remove("photos", p.id);
+        await remove("runs", r.id);
+      }
+    }
+    // Owner clean-up: Trash items marked deleted, once nobody else's files are inside.
+    const foreignInside = new Set();
+    for (const f of [...files, ...folders.values()])
+      if (!f.ownedByMe)
+        for (
+          let p = folders.get(f.parents?.[0]);
+          p;
+          p = folders.get(p.parents?.[0])
+        )
+          foreignInside.add(p.id);
+    const toTrash = [
+      ...files.filter((f) => f.ownedByMe && gone(f)),
+      ...[...folders.values()].filter(
+        (f) => f.ownedByMe && marked(f) && !foreignInside.has(f.id),
+      ),
+    ];
+    for (const f of toTrash)
+      await api("/files/" + f.id + "?fields=id", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trashed: true }),
+      }).catch(() => {});
     onStatus(
-      `Drive loaded · ${result.added} new, ${result.replaced} updated, ${result.removed} removed` +
+      `Drive checked · ${result.added} new, ${result.replaced} updated, ${result.removed} removed` +
         (result.skipped
-          ? `, ${result.skipped} skipped (incomplete or changed here)`
+          ? `, ${result.skipped} waiting (upload in progress or unsent here)`
           : "") +
         ".",
     );
@@ -518,8 +583,11 @@ export async function sync(onStatus = () => {}) {
       await setting("driveRoot", root);
       const runs = await all("runs");
       let uploaded = 0;
+      const blocked = new Set();
       while (true) {
-        const pending = (await all("photos")).filter((p) => !p.synced);
+        const pending = (await all("photos")).filter(
+          (p) => !p.synced && !blocked.has(p.id),
+        );
         if (!pending.length) break;
         for (let i = 0; i < pending.length; i++) {
           let p = await get("photos", pending[i].id);
@@ -527,58 +595,70 @@ export async function sync(onStatus = () => {}) {
           const r = await get("runs", p.run);
           if (!r) continue;
           onStatus(`Uploading ${i + 1} of ${pending.length} · ${p.name}`);
-          const b = await folder(r.bottle, r.bottle, root),
-            instance = await folder(r.bottle + "/" + r.instance, r.instance, b),
-            sess = await folder(
-              r.id,
-              r.session + "_" + r.id.slice(0, 8),
-              instance,
-            ),
-            level = await folder(
-              r.id + "/" + p.level,
-              "L" + String(p.level).padStart(2, "0"),
-              sess,
+          try {
+            const b = await folder(r.bottle, r.bottle, root),
+              instance = await folder(
+                r.bottle + "/" + r.instance,
+                r.instance,
+                b,
+              ),
+              sess = await folder(
+                r.id,
+                r.session + "_" + r.id.slice(0, 8),
+                instance,
+              ),
+              level = await folder(
+                r.id + "/" + p.level,
+                "L" + String(p.level).padStart(2, "0"),
+                sess,
+              );
+            if (!p.cloud) {
+              p.cloud = { image: await nextId(), label: await nextId() };
+              await put("photos", p);
+            }
+            const image = await ensureFile(
+              p.cloud.image,
+              { name: p.name, parents: [level], mimeType: "image/jpeg" },
+              p.blob,
             );
-          if (!p.cloud) {
-            p.cloud = { image: await nextId(), label: await nextId() };
+            if (image.trashed || Number(image.size) !== p.blob.size)
+              throw Error(
+                "Cloud photo size differs or the photo is in Trash. Check Drive before continuing.",
+              );
+            const label = new Blob([JSON.stringify(labelFor(p, r), null, 2)], {
+              type: "application/json",
+            });
+            const record = await ensureFile(
+              p.cloud.label,
+              {
+                name: p.name.replace(".jpg", ".json"),
+                parents: [level],
+                mimeType: "application/json",
+              },
+              label,
+            );
+            if (record.trashed || Number(record.size) !== label.size)
+              throw Error("Cloud measurement record needs checking.");
+            uploaded++;
+            p.synced = true;
+            p.syncedAt = new Date().toISOString();
             await put("photos", p);
+            onStatus(`Saved to Google Drive · ${p.name}`);
+          } catch (e) {
+            if (e.code !== "deleted") throw e;
+            // Kept on this device, never removed automatically. Export or delete it here.
+            blocked.add(p.id);
           }
-          const image = await ensureFile(
-            p.cloud.image,
-            { name: p.name, parents: [level], mimeType: "image/jpeg" },
-            p.blob,
-          );
-          if (image.trashed || Number(image.size) !== p.blob.size)
-            throw Error(
-              "Cloud photo size differs or the photo is in Trash. Check Drive before continuing.",
-            );
-          const label = new Blob([JSON.stringify(labelFor(p, r), null, 2)], {
-            type: "application/json",
-          });
-          const record = await ensureFile(
-            p.cloud.label,
-            {
-              name: p.name.replace(".jpg", ".json"),
-              parents: [level],
-              mimeType: "application/json",
-            },
-            label,
-          );
-          if (record.trashed || Number(record.size) !== label.size)
-            throw Error("Cloud measurement record needs checking.");
-          uploaded++;
-          p.synced = true;
-          p.syncedAt = new Date().toISOString();
-          await put("photos", p);
-          onStatus(`Saved to Google Drive · ${p.name}`);
         }
       }
       onStatus(
-        uploaded
-          ? "All queued photos and labels are saved to Google Drive."
-          : removed
-            ? "Old Drive files moved to Trash. No pending uploads."
-            : "No pending uploads.",
+        blocked.size
+          ? `${blocked.size} photos were not uploaded: their session was deleted on another device. They stay on this device.`
+          : uploaded
+            ? "All queued photos and labels are saved to Google Drive."
+            : removed
+              ? "Old Drive files moved to Trash. No pending uploads."
+              : "No pending uploads.",
       );
     } finally {
       busy = false;

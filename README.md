@@ -57,9 +57,18 @@ Each browser keeps its own local copy. To see phone photos on the laptop, use th
 
 When Drive is connected, the app loads the shared dataset on start and after Connect. You can also tap Load from Drive in Dataset or Settings. It downloads sessions and photos uploaded by other devices, replaces photos retaken elsewhere, and removes photos whose Drive files were deleted elsewhere. Photos this device has not uploaded yet are never removed. Every device reuses the existing BottleCapture Dataset folders instead of creating duplicates. Archived-attempt status is not stored on Drive, so an archived attempt appears as a normal session on other devices.
 
-## Capture with a friend (two Google accounts)
+## Capture with a friend (two Google accounts, one central dataset)
 1. In Google Cloud Console → Google Auth Platform → Audience, add the friend's Google email as a test user.
 2. In Google Drive, share the "BottleCapture Dataset" folder with the friend as Editor.
 3. The friend opens the site, pastes the same OAuth client ID, and connects with his own account.
 
-The app now requests full Drive access (`drive` scope), because `drive.file` cannot see files another account created. It only reads and writes inside the dataset folder. A folder shared with you is found automatically; Settings also accepts a pasted folder link. The friend's photos are stored in your folder but count against his storage. Sessions uploaded by another account are view-only: only the uploader can continue, retake or delete them. Everyone must reconnect once after this update.
+Both of you work on one dataset, like two people on one git branch. Either person can start sessions, add photos to any session, retake any photo and delete any session. Each device pushes its changes when it syncs and pulls everyone else's changes on open, every 2 minutes, after each sync, and when you return to the tab (never in the middle of capturing).
+
+How it works:
+- The app requests full Drive access (`drive` scope), because `drive.file` cannot see files another account created. It only reads and writes inside the dataset folder. A folder shared with you is found automatically; Settings also accepts a pasted folder link.
+- In a shared My Drive folder only a file's owner can move it to Trash. So deletes and retakes first mark the old file or folder as deleted (`appProperties.bottlecaptureDeleted`), which every device treats as gone. The owner's device moves marked items to Drive Trash at its next check, where they stay restorable for 30 days.
+- If both people save the same photo slot, the newest upload wins on every device.
+- Photos a device has not uploaded yet are never removed by a pull. If their session was deleted elsewhere, they stay on that device and are not uploaded; export or delete them there.
+- The friend's photos are stored in your folder but count against his Google storage.
+- Archived-attempt status (Reset session) and fill measurements without photos are not shared.
+- Everyone must reconnect once after the switch to full Drive access.
