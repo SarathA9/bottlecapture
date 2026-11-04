@@ -14,7 +14,7 @@ Drive creates BottleCapture Dataset / bottle / physical instance / unique sessio
 4. Paste its public client ID into the app's Settings. Never supply a client secret.
 5. Connect, approve drive.file access, and test a pilot JPEG and JSON sidecar.
 
-Only `drive.file` scope is requested. The access token stays in memory. Reconnect after expiry. This is separate from ChatGPT's Google Drive connector. Google or managed-account policy may require extra setup.
+Only `drive.file` scope is requested. The access token stays in tab-scoped sessionStorage across refreshes until expiry or disconnect. Reconnect after expiry or closing the tab. If session storage is unavailable, refresh requires reconnecting. This is separate from ChatGPT's Google Drive connector. Google or managed-account policy may require extra setup.
 
 ## Reliability
 IndexedDB saves are committed before showing success. Unique slot keys prevent overwrite. Drive IDs are generated and persisted before file creation; retries reuse them. A photo is marked synced only after both JPEG and JSON exist, match their expected byte size and are not in Trash. This checks byte size, not a cryptographic digest. Sync is serialised with Web Locks when available; use one tab. Failed sync stays pending and can be retried. New photos during a sync are drained before it completes. Do not move/delete cloud records during collection.
@@ -39,3 +39,6 @@ Four bottle types, 11 target levels, actual grams for each fill, ten views for t
 
 ## Development
 Serve dist/ through HTTPS for camera and OAuth. Set the local origin in your Google OAuth client if testing sign-in locally. Static deployment; no runtime secrets. Test records in preview storage are not included in the published app.
+
+## Resume and reset
+Continue photos opens the first incomplete fill and next missing view after confirming the measured mass. Reset session archives the previous attempt and creates a fresh empty attempt with the same setup and references. Archived photos remain available for export, and existing Drive files remain unchanged. New attempts use separate Drive session folders.

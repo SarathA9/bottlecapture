@@ -1,3 +1,5 @@
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import assert from 'node:assert/strict';
 import {mass,waterMass,checkRun,photoName,photoPath,csv,labelFor} from '../dist/core.js';
 import {zip,crc32} from '../dist/zip.js';
@@ -10,4 +12,4 @@ assert.equal(photoName(r,3,0),'B04_I01_S01_abcdefgh_L03_A_01.jpg');assert.match(
 const p={id:'a',name:'a.jpg',path:'images/a.jpg',level:3,shot:0,mass:224.7,gross:724.7,visibility:'hidden',width:2000,height:3000,blob:new Blob(['jpeg']),takenAt:'2026-11-03'};
 assert.equal(labelFor(p,r).water_mass_g,224.7);assert.equal(labelFor(p,r).target_water_g,225);assert.match(csv([labelFor(p,r)]),/"224.7"/);
 assert.equal(crc32(new TextEncoder().encode('123456789')),0xcbf43926);
-const z=await zip([['BottleDataset/a.txt',new Blob(['hello'])],['BottleDataset/labels.csv',new Blob([csv([labelFor(p,r)])])]]);fs.writeFileSync('/tmp/bottlecapture-test.zip',Buffer.from(await z.arrayBuffer()));console.log('PASS: masses, fill validation, leakage grouping, stable reference, naming, labels and ZIP CRC.');
+const z=await zip([['BottleDataset/a.txt',new Blob(['hello'])],['BottleDataset/labels.csv',new Blob([csv([labelFor(p,r)])])]]);fs.writeFileSync(join(tmpdir(),'bottlecapture-test.zip'),Buffer.from(await z.arrayBuffer()));console.log('PASS: masses, fill validation, leakage grouping, stable reference, naming, labels and ZIP CRC.');
