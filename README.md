@@ -42,3 +42,12 @@ Serve dist/ through HTTPS for camera and OAuth. Set the local origin in your Goo
 
 ## Resume and reset
 Continue photos opens the first incomplete fill and next missing view after confirming the measured mass. Reset session archives the previous attempt and creates a fresh empty attempt with the same setup and references. Archived photos remain available for export, and existing Drive files remain unchanged. New attempts use separate Drive session folders.
+
+## Delete a session
+Open the session and tap Delete session, then confirm. The session, its fill measurements and its photos are removed from this device. If any photos reached Google Drive, the session's Drive folder is moved to Drive Trash (restorable for 30 days). If Drive is not connected at that moment, the folder is queued and moved to Trash at the next sync. Deletion waits for any running upload, so an upload cannot recreate the deleted files.
+
+## Retake from the Dataset view
+In Dataset, open a photo and tap Retake this photo. The app opens the same bottle, level and view. Reweigh the bottle first. If the reading matches the saved fill within one scale step, the retake keeps that label. If it differs, you can confirm the new reading, and only the retaken photo gets the new measured mass. Nothing is deleted until you save the retake. On save, the photo is replaced locally under the same filename, the old Drive JPEG and JSON are queued for Drive Trash, and the new pair is uploaded. Archived attempts are read-only.
+
+## Live camera
+The live camera fills the screen and sizes the preview to the real video, so the guide frame sits on the image. It asks for the full 4:3 sensor and, if an upright phone returns a sideways stream, asks again for a portrait stream. The live label shows the actual stream resolution.

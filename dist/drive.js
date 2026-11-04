@@ -1,14 +1,295 @@
-import {setting,get,put,all} from './db.js';
-import {labelFor} from './core.js';
-let token='',expires=0,busy=false;export const connected=()=>!!token&&Date.now()<expires;
-const sessionKey='bottlecapture-drive-session';
-function clearSession(){token='';expires=0;try{globalThis.sessionStorage?.removeItem(sessionKey);}catch{}}
-function saveSession(clientId){try{globalThis.sessionStorage?.setItem(sessionKey,JSON.stringify({token,expires,clientId}));}catch{}}
-export async function restore(clientId){try{const saved=JSON.parse(globalThis.sessionStorage?.getItem(sessionKey)||'null');if(!saved||saved.clientId!==clientId||typeof saved.token!=='string'||!Number.isFinite(saved.expires)||saved.expires<=Date.now()){clearSession();return false;}token=saved.token;expires=saved.expires;return true;}catch{clearSession();return false;}}
-export function disconnect(){if(token&&globalThis.google)google.accounts.oauth2.revoke(token,()=>{});clearSession();}
-export async function connect(clientId){if(!clientId?.endsWith('.apps.googleusercontent.com'))throw Error('Add your Google OAuth client ID in Settings first.');if(!globalThis.google?.accounts?.oauth2)throw Error('Google sign-in has not loaded. Check your connection and reopen the app in Safari.');return new Promise((resolve,reject)=>{const c=google.accounts.oauth2.initTokenClient({client_id:clientId,scope:'https://www.googleapis.com/auth/drive.file',callback:async r=>{if(r.error)return reject(Error(r.error_description||r.error));token=r.access_token;expires=Date.now()+(Number(r.expires_in)-60)*1000;try{const about=await api('/about?fields=user(displayName,emailAddress,permissionId)');const owner=await setting('driveOwner');if(owner&&owner!==about.user.permissionId){token='';expires=0;throw Error('Connect the same Google account used for this dataset. Account switching is disabled to prevent mixed uploads.');}await setting('driveOwner',about.user.permissionId);await setting('driveEmail',about.user.emailAddress);saveSession(clientId);resolve(about.user);}catch(e){clearSession();reject(e);}},error_callback:e=>reject(Error(e.type==='popup_closed'?'Sign-in was closed.':'Could not open Google sign-in. Use Safari and allow the sign-in window.'))});c.requestAccessToken({prompt:'select_account'});});}
-async function api(path,options={}){if(!connected())throw Error('Reconnect Google Drive to continue uploading.');const {upload,...opts}=options;const r=await fetch((upload?'https://www.googleapis.com/upload/drive/v3':'https://www.googleapis.com/drive/v3')+path,{...opts,headers:{Authorization:'Bearer '+token,...opts.headers},signal:AbortSignal.timeout(90000)});if(r.status===401){clearSession();throw Error('Google session expired. Reconnect to continue.');}if(!r.ok){const e=await r.json().catch(()=>({}));const error=Error(e.error?.message||'Google Drive returned '+r.status);error.status=r.status;throw error;}return r.status===204?{}:r.json();}
-async function nextId(){return (await api('/files/generateIds?count=1&space=drive&type=files')).ids[0];}
-async function ensureFile(id,meta,blob){try{return await api('/files/'+id+'?fields=id,name,size,trashed');}catch(e){if(e.status!==404)throw e;}try{if(!blob)return await api('/files?fields=id,name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,...meta})});const boundary='bottle_'+crypto.randomUUID(),body=new Blob([`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({id,...meta})}\r\n--${boundary}\r\nContent-Type: ${blob.type||'application/octet-stream'}\r\n\r\n`,blob,`\r\n--${boundary}--`]);return await api('/files?uploadType=multipart&fields=id,name,size,trashed',{upload:true,method:'POST',headers:{'Content-Type':'multipart/related; boundary='+boundary},body});}catch(e){if(e.status===409)return api('/files/'+id+'?fields=id,name,size,trashed');throw e;}}
-async function folder(key,name,parent){let id=await setting('folder:'+key);if(!id){id=await nextId();await setting('folder:'+key,id);}const f=await ensureFile(id,{name,mimeType:'application/vnd.google-apps.folder',...(parent?{parents:[parent]}:{})});if(f.trashed)throw Error('A dataset folder is in Google Drive Trash. Restore it before syncing.');return id;}
-export async function sync(onStatus=()=>{}){if(busy) return;busy=true;const work=async()=>{try{if(!connected())throw Error('Connect Google Drive to upload your saved photos.');const root=await folder('root','BottleCapture Dataset');await setting('driveRoot',root);const runs=await all('runs');let uploaded=0;while(true){const pending=(await all('photos')).filter(p=>!p.synced);if(!pending.length)break;for(let i=0;i<pending.length;i++){let p=await get('photos',pending[i].id);if(p.synced)continue;const r=await get('runs',p.run);onStatus(`Uploading ${i+1} of ${pending.length} · ${p.name}`);const b=await folder(r.bottle,r.bottle,root),instance=await folder(r.bottle+'/'+r.instance,r.instance,b),sess=await folder(r.id,r.session+'_'+r.id.slice(0,8),instance),level=await folder(r.id+'/'+p.level,'L'+String(p.level).padStart(2,'0'),sess);if(!p.cloud){p.cloud={image:await nextId(),label:await nextId()};await put('photos',p);}const image=await ensureFile(p.cloud.image,{name:p.name,parents:[level],mimeType:'image/jpeg'},p.blob);if(image.trashed||Number(image.size)!==p.blob.size)throw Error('Cloud photo size differs or the photo is in Trash. Check Drive before continuing.');const label=new Blob([JSON.stringify(labelFor(p,r),null,2)],{type:'application/json'});const record=await ensureFile(p.cloud.label,{name:p.name.replace('.jpg','.json'),parents:[level],mimeType:'application/json'},label);if(record.trashed||Number(record.size)!==label.size)throw Error('Cloud measurement record needs checking.');uploaded++;p.synced=true;p.syncedAt=new Date().toISOString();await put('photos',p);onStatus(`Saved to Google Drive · ${p.name}`);}}onStatus(uploaded?'All queued photos and labels are saved to Google Drive.':'No pending uploads.');}finally{busy=false;}};try{if(navigator.locks)await navigator.locks.request('bottlecapture-drive',work);else await work();}catch(e){busy=false;throw e;}}
+import { setting, get, put, all, trashQueue, unqueueTrash } from "./db.js";
+import { labelFor } from "./core.js";
+let token = "",
+  expires = 0,
+  busy = false;
+export const connected = () => !!token && Date.now() < expires;
+const sessionKey = "bottlecapture-drive-session";
+function clearSession() {
+  token = "";
+  expires = 0;
+  try {
+    globalThis.sessionStorage?.removeItem(sessionKey);
+  } catch {}
+}
+function saveSession(clientId) {
+  try {
+    globalThis.sessionStorage?.setItem(
+      sessionKey,
+      JSON.stringify({ token, expires, clientId }),
+    );
+  } catch {}
+}
+export async function restore(clientId) {
+  try {
+    const saved = JSON.parse(
+      globalThis.sessionStorage?.getItem(sessionKey) || "null",
+    );
+    if (
+      !saved ||
+      saved.clientId !== clientId ||
+      typeof saved.token !== "string" ||
+      !Number.isFinite(saved.expires) ||
+      saved.expires <= Date.now()
+    ) {
+      clearSession();
+      return false;
+    }
+    token = saved.token;
+    expires = saved.expires;
+    return true;
+  } catch {
+    clearSession();
+    return false;
+  }
+}
+export function disconnect() {
+  if (token && globalThis.google)
+    google.accounts.oauth2.revoke(token, () => {});
+  clearSession();
+}
+export async function connect(clientId) {
+  if (!clientId?.endsWith(".apps.googleusercontent.com"))
+    throw Error("Add your Google OAuth client ID in Settings first.");
+  if (!globalThis.google?.accounts?.oauth2)
+    throw Error(
+      "Google sign-in has not loaded. Check your connection and reopen the app in Safari.",
+    );
+  return new Promise((resolve, reject) => {
+    const c = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: "https://www.googleapis.com/auth/drive.file",
+      callback: async (r) => {
+        if (r.error) return reject(Error(r.error_description || r.error));
+        token = r.access_token;
+        expires = Date.now() + (Number(r.expires_in) - 60) * 1000;
+        try {
+          const about = await api(
+            "/about?fields=user(displayName,emailAddress,permissionId)",
+          );
+          const owner = await setting("driveOwner");
+          if (owner && owner !== about.user.permissionId) {
+            token = "";
+            expires = 0;
+            throw Error(
+              "Connect the same Google account used for this dataset. Account switching is disabled to prevent mixed uploads.",
+            );
+          }
+          await setting("driveOwner", about.user.permissionId);
+          await setting("driveEmail", about.user.emailAddress);
+          saveSession(clientId);
+          resolve(about.user);
+        } catch (e) {
+          clearSession();
+          reject(e);
+        }
+      },
+      error_callback: (e) =>
+        reject(
+          Error(
+            e.type === "popup_closed"
+              ? "Sign-in was closed."
+              : "Could not open Google sign-in. Use Safari and allow the sign-in window.",
+          ),
+        ),
+    });
+    c.requestAccessToken({ prompt: "select_account" });
+  });
+}
+async function api(path, options = {}) {
+  if (!connected())
+    throw Error("Reconnect Google Drive to continue uploading.");
+  const { upload, ...opts } = options;
+  const r = await fetch(
+    (upload
+      ? "https://www.googleapis.com/upload/drive/v3"
+      : "https://www.googleapis.com/drive/v3") + path,
+    {
+      ...opts,
+      headers: { Authorization: "Bearer " + token, ...opts.headers },
+      signal: AbortSignal.timeout(90000),
+    },
+  );
+  if (r.status === 401) {
+    clearSession();
+    throw Error("Google session expired. Reconnect to continue.");
+  }
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    const error = Error(
+      e.error?.message || "Google Drive returned " + r.status,
+    );
+    error.status = r.status;
+    throw error;
+  }
+  return r.status === 204 ? {} : r.json();
+}
+async function nextId() {
+  return (await api("/files/generateIds?count=1&space=drive&type=files"))
+    .ids[0];
+}
+async function ensureFile(id, meta, blob) {
+  try {
+    return await api("/files/" + id + "?fields=id,name,size,trashed");
+  } catch (e) {
+    if (e.status !== 404) throw e;
+  }
+  try {
+    if (!blob)
+      return await api("/files?fields=id,name", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...meta }),
+      });
+    const boundary = "bottle_" + crypto.randomUUID(),
+      body = new Blob([
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ id, ...meta })}\r\n--${boundary}\r\nContent-Type: ${blob.type || "application/octet-stream"}\r\n\r\n`,
+        blob,
+        `\r\n--${boundary}--`,
+      ]);
+    return await api(
+      "/files?uploadType=multipart&fields=id,name,size,trashed",
+      {
+        upload: true,
+        method: "POST",
+        headers: { "Content-Type": "multipart/related; boundary=" + boundary },
+        body,
+      },
+    );
+  } catch (e) {
+    if (e.status === 409)
+      return api("/files/" + id + "?fields=id,name,size,trashed");
+    throw e;
+  }
+}
+async function folder(key, name, parent) {
+  let id = await setting("folder:" + key);
+  if (!id) {
+    id = await nextId();
+    await setting("folder:" + key, id);
+  }
+  const f = await ensureFile(id, {
+    name,
+    mimeType: "application/vnd.google-apps.folder",
+    ...(parent ? { parents: [parent] } : {}),
+  });
+  if (f.trashed)
+    throw Error(
+      "A dataset folder is in Google Drive Trash. Restore it before syncing.",
+    );
+  return id;
+}
+// One queue for every Drive-changing job in this tab, plus Web Locks across tabs.
+let chain = Promise.resolve();
+export function exclusive(fn) {
+  const run = () =>
+    navigator.locks ? navigator.locks.request("bottlecapture-drive", fn) : fn();
+  const result = chain.then(run, run);
+  chain = result.catch(() => {});
+  return result;
+}
+// Move queued Drive files (deleted sessions, replaced photos) to Trash.
+// Trash keeps them recoverable for 30 days. Missing files are already gone.
+export async function emptyTrash(onStatus = () => {}) {
+  const ids = await trashQueue();
+  for (let i = 0; i < ids.length; i++) {
+    onStatus(`Removing old Drive files ${i + 1} of ${ids.length}`);
+    try {
+      await api("/files/" + ids[i] + "?fields=id,trashed", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trashed: true }),
+      });
+    } catch (e) {
+      if (e.status !== 404) throw e;
+    }
+    await unqueueTrash(ids[i]);
+  }
+  return ids.length;
+}
+export const pendingTrash = async () => (await trashQueue()).length;
+export async function sync(onStatus = () => {}) {
+  if (busy) return;
+  busy = true;
+  const work = async () => {
+    try {
+      if (!connected())
+        throw Error("Connect Google Drive to upload your saved photos.");
+      const removed = await emptyTrash(onStatus);
+      const root = await folder("root", "BottleCapture Dataset");
+      await setting("driveRoot", root);
+      const runs = await all("runs");
+      let uploaded = 0;
+      while (true) {
+        const pending = (await all("photos")).filter((p) => !p.synced);
+        if (!pending.length) break;
+        for (let i = 0; i < pending.length; i++) {
+          let p = await get("photos", pending[i].id);
+          if (!p || p.synced) continue;
+          const r = await get("runs", p.run);
+          if (!r) continue;
+          onStatus(`Uploading ${i + 1} of ${pending.length} · ${p.name}`);
+          const b = await folder(r.bottle, r.bottle, root),
+            instance = await folder(r.bottle + "/" + r.instance, r.instance, b),
+            sess = await folder(
+              r.id,
+              r.session + "_" + r.id.slice(0, 8),
+              instance,
+            ),
+            level = await folder(
+              r.id + "/" + p.level,
+              "L" + String(p.level).padStart(2, "0"),
+              sess,
+            );
+          if (!p.cloud) {
+            p.cloud = { image: await nextId(), label: await nextId() };
+            await put("photos", p);
+          }
+          const image = await ensureFile(
+            p.cloud.image,
+            { name: p.name, parents: [level], mimeType: "image/jpeg" },
+            p.blob,
+          );
+          if (image.trashed || Number(image.size) !== p.blob.size)
+            throw Error(
+              "Cloud photo size differs or the photo is in Trash. Check Drive before continuing.",
+            );
+          const label = new Blob([JSON.stringify(labelFor(p, r), null, 2)], {
+            type: "application/json",
+          });
+          const record = await ensureFile(
+            p.cloud.label,
+            {
+              name: p.name.replace(".jpg", ".json"),
+              parents: [level],
+              mimeType: "application/json",
+            },
+            label,
+          );
+          if (record.trashed || Number(record.size) !== label.size)
+            throw Error("Cloud measurement record needs checking.");
+          uploaded++;
+          p.synced = true;
+          p.syncedAt = new Date().toISOString();
+          await put("photos", p);
+          onStatus(`Saved to Google Drive · ${p.name}`);
+        }
+      }
+      onStatus(
+        uploaded
+          ? "All queued photos and labels are saved to Google Drive."
+          : removed
+            ? "Old Drive files moved to Trash. No pending uploads."
+            : "No pending uploads.",
+      );
+    } finally {
+      busy = false;
+    }
+  };
+  try {
+    await exclusive(work);
+  } catch (e) {
+    busy = false;
+    throw e;
+  }
+}
