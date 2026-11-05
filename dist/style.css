@@ -1097,3 +1097,9 @@ body.camera-open {
 .camera-open #cameraControls .capture-button {
   margin: 0;
 }
+
+button.badge {
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}

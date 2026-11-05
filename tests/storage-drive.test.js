@@ -788,3 +788,77 @@ console.log(
     "PASS: partner who connected before sharing switches to the shared folder, re-uploads, and both see everything.",
   );
 }
+
+// The login survives closing the browser, and renew() gets a fresh one without a chooser.
+{
+  const CLIENT = "test.apps.googleusercontent.com",
+    HINT = "late@example.invalid",
+    ls = new Map(),
+    session2 = new Map(),
+    key = "bottlecapture-drive-session";
+  globalThis.localStorage = {
+    getItem: (k) => ls.get(k) || null,
+    setItem: (k, v) => ls.set(k, v),
+    removeItem: (k) => ls.delete(k),
+  };
+  session.clear();
+  const seen = [];
+  const origInit = globalThis.google.accounts.oauth2.initTokenClient;
+  globalThis.google.accounts.oauth2.initTokenClient = (config) => ({
+    requestAccessToken: (o) => {
+      seen.push({ prompt: o?.prompt, hint: config.hint });
+      config.callback({ access_token: "TEST_ONLY", expires_in: 3600 });
+    },
+  });
+  await connect(CLIENT, HINT);
+  assert.deepEqual(
+    seen[0],
+    { prompt: "", hint: HINT },
+    "known account: no account chooser",
+  );
+  assert.ok(ls.has(key), "login is saved in localStorage");
+  assert.equal(session.has(key), false);
+  const reopened = await import("../dist/drive.js?closed");
+  assert.equal(reopened.connected(), false);
+  assert.equal(
+    await reopened.restore(CLIENT),
+    true,
+    "login is still there after the browser was closed",
+  );
+  assert.equal(reopened.connected(), true);
+  // First-time connect still shows the account chooser.
+  await connect(CLIENT);
+  assert.equal(seen[1].prompt, "select_account");
+  // Expired login: restore refuses it, renew gets a fresh one with prompt "none".
+  const saved = JSON.parse(ls.get(key));
+  saved.expires = Date.now() - 1;
+  ls.set(key, JSON.stringify(saved));
+  const expired = await import("../dist/drive.js?expired");
+  assert.equal(await expired.restore(CLIENT), false);
+  assert.equal(expired.connected(), false);
+  assert.equal(expired.msLeft(), 0);
+  await expired.renew(CLIENT, HINT);
+  assert.deepEqual(seen.at(-1), { prompt: "none", hint: HINT });
+  assert.equal(expired.connected(), true);
+  assert.ok(expired.msLeft() > 3000 * 1000);
+  assert.ok(ls.has(key), "renewed login is saved too");
+  // Silent renewal blocked by the browser: fails, and the valid login stays.
+  globalThis.google.accounts.oauth2.initTokenClient = (config) => ({
+    requestAccessToken: () =>
+      config.error_callback({ type: "popup_failed_to_open" }),
+  });
+  await assert.rejects(
+    expired.renew(CLIENT, HINT),
+    /Could not open Google sign-in/,
+  );
+  assert.equal(expired.connected(), true);
+  // Disconnect removes the saved login everywhere.
+  expired.disconnect();
+  assert.equal(ls.size, 0);
+  assert.equal(expired.connected(), false);
+  globalThis.google.accounts.oauth2.initTokenClient = origInit;
+  delete globalThis.localStorage;
+  console.log(
+    "PASS: login survives closing the browser, one-tap connect skips the chooser, silent renew works or fails safely, disconnect clears it.",
+  );
+}

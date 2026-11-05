@@ -14,7 +14,7 @@ Drive creates BottleCapture Dataset / bottle / physical instance / unique sessio
 4. Paste its public client ID into the app's Settings. Never supply a client secret.
 5. Connect, approve drive.file access, and test a pilot JPEG and JSON sidecar.
 
-Only `drive.file` scope is requested. The access token stays in tab-scoped sessionStorage across refreshes until expiry or disconnect. Reconnect after expiry or closing the tab. If session storage is unavailable, refresh requires reconnecting. This is separate from ChatGPT's Google Drive connector. Google or managed-account policy may require extra setup.
+Only `drive.file` scope is requested. The login is kept in this browser's localStorage, so it survives closing the tab or the browser, until it expires or you tap Disconnect. This is separate from ChatGPT's Google Drive connector. Google or managed-account policy may require extra setup.
 
 ## Reliability
 IndexedDB saves are committed before showing success. Unique slot keys prevent overwrite. Drive IDs are generated and persisted before file creation; retries reuse them. A photo is marked synced only after both JPEG and JSON exist, match their expected byte size and are not in Trash. This checks byte size, not a cryptographic digest. Sync is serialised with Web Locks when available; use one tab. Failed sync stays pending and can be retried. New photos during a sync are drained before it completes. Do not move/delete cloud records during collection.
@@ -72,3 +72,11 @@ How it works:
 - The friend's photos are stored in your folder but count against his Google storage.
 - Archived-attempt status (Reset session) and fill measurements without photos are not shared.
 - Everyone must reconnect once after the switch to full Drive access.
+
+## Staying connected
+Google gives a browser-only app a login that lasts about 1 hour. A longer login needs a small server that holds a client secret, which this app deliberately does not have. So the app does the most that is possible without one:
+- The login survives closing the tab or the browser (localStorage) until it expires. Any script on this site's origin could read it, so use the app only on your own devices, and tap Disconnect on a shared phone.
+- Every 2 minutes, and when you return to the app, it checks whether the login ends within 5 minutes. If so, it asks Google for a fresh one quietly (`prompt: none`). That works while you are still signed in to Google in this browser and the browser allows it.
+- If the quiet renewal is blocked (iPhone Safari often does), the top-right badge turns into **Tap to reconnect Drive**. One tap reconnects without an account chooser, then loads and uploads what is waiting.
+- Photos are always saved on the device first, so an expired login never loses photos. The badge shows how many are waiting.
+- Disconnect turns this off until you connect again.

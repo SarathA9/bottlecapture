@@ -136,6 +136,18 @@ function lonely() {
     (settingsCache.people || []).length <= 1
   );
 }
+// Drive login state for the top-right badge.
+// "wanted": the user connected before and has not tapped Disconnect, so the login only expired.
+const driveWanted = () =>
+  !!settingsCache.wanted && !!settingsCache.client && !!settingsCache.email;
+function reconnectBadge() {
+  if (drive.connected())
+    return '<span class="badge"><i class="dot"></i>Drive connected</span>';
+  const waiting = photos.filter((p) => !p.synced).length;
+  if (driveWanted() && navigator.onLine)
+    return `<button class="badge warn" id="reconnectBadge"><i class="dot"></i>Tap to reconnect Drive${waiting ? ` · ${waiting} waiting` : ""}</button>`;
+  return `<span class="badge warn"><i class="dot"></i>${navigator.onLine ? "Local collection" : "Offline"}${waiting ? ` · ${waiting} waiting` : ""}</span>`;
+}
 function activeFill() {
   return retakeFill || current.fills[level];
 }
@@ -161,7 +173,7 @@ function shell(content) {
     )
     .join(
       "",
-    )}</nav><div class="sidebar-foot"><strong>A good dataset starts here.</strong>Keep the labels on. Measure every fill. Make every photo count.<hr class="divider">OTH Amberg-Weiden<br>Computer vision project</div></aside><main class="main"><div class="topbar"><span class="crumb">Workspace &nbsp; / &nbsp; <strong>Water in a bottle</strong></span><div class="brand mobile-brand"><span class="brand-icon">◒</span>BottleCapture</div><div class="topright"><span class="badge ${drive.connected() ? "" : "warn"}"><i class="dot"></i>${drive.connected() ? "Drive connected" : navigator.onLine ? "Local collection" : "Offline"}</span><span class="avatar">SA</span></div></div>${content}<div class="footer-note">BOTTLECAPTURE · MEASURE CAREFULLY. CAPTURE CONSISTENTLY. · VERSION __BUILD__</div></main></div>`;
+    )}</nav><div class="sidebar-foot"><strong>A good dataset starts here.</strong>Keep the labels on. Measure every fill. Make every photo count.<hr class="divider">OTH Amberg-Weiden<br>Computer vision project</div></aside><main class="main"><div class="topbar"><span class="crumb">Workspace &nbsp; / &nbsp; <strong>Water in a bottle</strong></span><div class="brand mobile-brand"><span class="brand-icon">◒</span>BottleCapture</div><div class="topright">${reconnectBadge()}<span class="avatar">SA</span></div></div>${content}<div class="footer-note">BOTTLECAPTURE · MEASURE CAREFULLY. CAPTURE CONSISTENTLY. · VERSION __BUILD__</div></main></div>`;
 }
 function render() {
   let content;
@@ -251,7 +263,7 @@ function guide() {
 }
 let settingsCache = {};
 function settings() {
-  return `${header("Make the studio yours.", "Connect storage, protect your dataset and keep collecting.")}<div class="grid2"><section class="panel"><div class="bar"><h2>Google Drive</h2><span class="badge ${drive.connected() ? "" : "warn"}">${drive.connected() ? "Connected" : "Setup / reconnect"}</span></div><p>Save & Next uploads the approved photo and its measured-mass JSON record into the “BottleCapture Dataset” folder, yours or one shared with you.</p><form id="driveForm">${field("Google OAuth web client ID", "client", settingsCache.client || "", "A public client ID ending in .apps.googleusercontent.com. Never enter a client secret.")}<button class="btn secondary" type="submit">Save client ID</button></form><div class="actions"><button class="btn" id="connectDrive">${icon("cloud")} Connect Google Drive</button><button class="btn secondary" id="syncNow">Sync pending</button><button class="btn secondary" id="pullDrive">Load from Drive</button>${drive.connected() ? '<button class="btn ghost" id="disconnectDrive">Disconnect</button>' : ""}</div><p class="tiny">${settingsCache.email ? "Dataset account: " + esc(settingsCache.email) : "Connect once, then reconnect when Google’s access token expires."}</p>${settingsCache.root ? `<a class="text-link" href="https://drive.google.com/drive/folders/${encodeURIComponent(settingsCache.root)}" target="_blank" rel="noopener">Open your Drive dataset ↗</a>` : ""}<p id="syncStatus" class="sync-status">${esc(syncMessage)}</p><hr class="divider"><h3>Shared dataset folder</h3><p class="tiny">${settingsCache.rootInfo ? `Uploading into “${esc(settingsCache.rootInfo.name)}”, owned by ${esc(settingsCache.rootInfo.owners?.[0]?.emailAddress || "unknown")}.${settingsCache.rootInfo.capabilities?.canAddChildren === false ? " You only have view access: ask the owner to make you an Editor." : ""}` : "Connect Drive to see which dataset folder this device uses."} A folder someone shared with you is found automatically. To pick a different one, paste its Drive link.</p>${lonely() ? `<div class="notice warn">Only you can see this folder. If your partner started the dataset, ask them to invite <strong>${esc(settingsCache.email)}</strong> in their Settings. If you started it, invite your partner below.</div>` : ""}<h3>People on this dataset</h3><ul class="steps">${(settingsCache.people || []).map((x) => `<li>${esc(x.emailAddress || x.displayName)} · ${x.role === "owner" ? "owner" : x.role === "writer" ? "can edit" : esc(x.role)}${x.role !== "owner" && settingsCache.rootInfo?.ownedByMe ? ` <button class="text-link" data-uninvite="${esc(x.id)}" data-who="${esc(x.emailAddress || x.displayName)}">Remove</button>` : ""}</li>`).join("") || "<li>Connect Drive to see who has access.</li>"}</ul>${settingsCache.rootInfo?.capabilities?.canShare !== false && settingsCache.rootInfo ? `<form id="inviteForm">${field("Invite a partner (Google email)", "email", "", "They get edit access and an email from Google. Use the exact address they connect with.", "email")}<button class="btn small" type="submit">Invite as editor</button></form>` : ""}<form id="rootForm">${field("Dataset folder link (optional)", "root", "", "Example: https://drive.google.com/drive/folders/…")}<div class="actions"><button class="btn secondary small" type="submit">Use this folder</button>${settingsCache.datasetRoot ? '<button class="btn ghost small" type="button" id="clearRoot">Use automatic folder</button>' : ""}</div></form><details><summary class="text-link">Add a friend who captures on his own phone</summary><ol class="steps"><li>In Google Cloud Console → Google Auth Platform → Audience, add your friend’s Google email as a <strong>test user</strong>.</li><li>In Google Drive, share the “BottleCapture Dataset” folder with your friend as <strong>Editor</strong>.</li><li>Your friend opens this site, pastes the same client ID in Settings, and connects with his own Google account.</li><li>The app finds the shared folder. You both work on one central dataset: new photos, retakes and deletes from either phone show up on every device within a couple of minutes.</li><li>His uploads use his own Google storage. Give his physical bottle its own instance ID (for example I02).</li></ol></details><details><summary class="text-link">One-time Google setup instructions</summary><ol class="steps"><li>Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> on your laptop. Create a project called BottleCapture.</li><li>Enable the <strong>Google Drive API</strong>.</li><li>Configure Google Auth Platform: your app name, contact email, and audience. For a personal external testing app, add your own Google email as a test user.</li><li>Create an OAuth client with application type <strong>Web application</strong>.</li><li>Add this exact <strong>Authorized JavaScript origin</strong>:<div class="filename">${esc(location.origin)}</div></li><li>Copy the client ID here, save it, and tap Connect Google Drive. No client secret or redirect URI is needed for this browser token flow.</li><li>Allow access to Google Drive. Full Drive access is needed so two Google accounts can work in one shared folder. The app only reads and writes inside the BottleCapture Dataset folder. Take one pilot photo and confirm both its JPEG and JSON arrive before a full session.</li></ol><p class="tiny">Google may require additional consent-screen configuration. Your password stays with Google; access tokens stay in tab session storage until expiry or disconnect, separate from the dataset.</p></details></section><section class="panel"><h2>Local safety net</h2><p>Approved photos are saved in this browser before uploading. Keep this tab open until uploads finish. Safari may pause work when the phone locks.</p><div class="notice warn">Browser storage is not a permanent backup. Clearing website data can remove unexported photos. Private browsing is unsuitable for collection.</div><div class="actions"><button class="btn secondary" data-export="all">${icon("download")} Export all photos + labels</button><button class="btn secondary" id="csvExport">Labels CSV</button><button class="btn ghost" id="persistStorage">Request persistent storage</button></div><p id="storageStatus" class="tiny"></p><hr class="divider"><h3>Use it on your iPhone</h3><ol class="steps"><li>Open this site in <strong>Safari</strong> and sign in to access your private app.</li><li>Use Share → <strong>Add to Home Screen</strong> for quick access.</li><li>Allow camera access when prompted. Start with a pilot session.</li></ol><p class="tiny">This version requires the site to load online. If the connection drops while it is open, photos can stay locally queued. Reopen online and reconnect Drive to resume.</p><hr class="divider"><h3>What stays on your device?</h3><p class="tiny">Photos, measurements and setup notes are stored locally. Connecting Drive uploads approved photos and per-photo labels to your own account. This app uses no LLM API and does not train or run your prediction model.</p></section></div>`;
+  return `${header("Make the studio yours.", "Connect storage, protect your dataset and keep collecting.")}<div class="grid2"><section class="panel"><div class="bar"><h2>Google Drive</h2><span class="badge ${drive.connected() ? "" : "warn"}">${drive.connected() ? "Connected" : "Setup / reconnect"}</span></div><p>Save & Next uploads the approved photo and its measured-mass JSON record into the “BottleCapture Dataset” folder, yours or one shared with you.</p><form id="driveForm">${field("Google OAuth web client ID", "client", settingsCache.client || "", "A public client ID ending in .apps.googleusercontent.com. Never enter a client secret.")}<button class="btn secondary" type="submit">Save client ID</button></form><div class="actions"><button class="btn" id="connectDrive">${icon("cloud")} Connect Google Drive</button><button class="btn secondary" id="syncNow">Sync pending</button><button class="btn secondary" id="pullDrive">Load from Drive</button>${drive.connected() ? '<button class="btn ghost" id="disconnectDrive">Disconnect</button>' : ""}</div><p class="tiny">${settingsCache.email ? "Dataset account: " + esc(settingsCache.email) : "Connect once. If the login expires, tap the Reconnect badge at the top."}</p>${settingsCache.root ? `<a class="text-link" href="https://drive.google.com/drive/folders/${encodeURIComponent(settingsCache.root)}" target="_blank" rel="noopener">Open your Drive dataset ↗</a>` : ""}<p id="syncStatus" class="sync-status">${esc(syncMessage)}</p><hr class="divider"><h3>Shared dataset folder</h3><p class="tiny">${settingsCache.rootInfo ? `Uploading into “${esc(settingsCache.rootInfo.name)}”, owned by ${esc(settingsCache.rootInfo.owners?.[0]?.emailAddress || "unknown")}.${settingsCache.rootInfo.capabilities?.canAddChildren === false ? " You only have view access: ask the owner to make you an Editor." : ""}` : "Connect Drive to see which dataset folder this device uses."} A folder someone shared with you is found automatically. To pick a different one, paste its Drive link.</p>${lonely() ? `<div class="notice warn">Only you can see this folder. If your partner started the dataset, ask them to invite <strong>${esc(settingsCache.email)}</strong> in their Settings. If you started it, invite your partner below.</div>` : ""}<h3>People on this dataset</h3><ul class="steps">${(settingsCache.people || []).map((x) => `<li>${esc(x.emailAddress || x.displayName)} · ${x.role === "owner" ? "owner" : x.role === "writer" ? "can edit" : esc(x.role)}${x.role !== "owner" && settingsCache.rootInfo?.ownedByMe ? ` <button class="text-link" data-uninvite="${esc(x.id)}" data-who="${esc(x.emailAddress || x.displayName)}">Remove</button>` : ""}</li>`).join("") || "<li>Connect Drive to see who has access.</li>"}</ul>${settingsCache.rootInfo?.capabilities?.canShare !== false && settingsCache.rootInfo ? `<form id="inviteForm">${field("Invite a partner (Google email)", "email", "", "They get edit access and an email from Google. Use the exact address they connect with.", "email")}<button class="btn small" type="submit">Invite as editor</button></form>` : ""}<form id="rootForm">${field("Dataset folder link (optional)", "root", "", "Example: https://drive.google.com/drive/folders/…")}<div class="actions"><button class="btn secondary small" type="submit">Use this folder</button>${settingsCache.datasetRoot ? '<button class="btn ghost small" type="button" id="clearRoot">Use automatic folder</button>' : ""}</div></form><details><summary class="text-link">Add a friend who captures on his own phone</summary><ol class="steps"><li>In Google Cloud Console → Google Auth Platform → Audience, add your friend’s Google email as a <strong>test user</strong>.</li><li>In Google Drive, share the “BottleCapture Dataset” folder with your friend as <strong>Editor</strong>.</li><li>Your friend opens this site, pastes the same client ID in Settings, and connects with his own Google account.</li><li>The app finds the shared folder. You both work on one central dataset: new photos, retakes and deletes from either phone show up on every device within a couple of minutes.</li><li>His uploads use his own Google storage. Give his physical bottle its own instance ID (for example I02).</li></ol></details><details><summary class="text-link">One-time Google setup instructions</summary><ol class="steps"><li>Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> on your laptop. Create a project called BottleCapture.</li><li>Enable the <strong>Google Drive API</strong>.</li><li>Configure Google Auth Platform: your app name, contact email, and audience. For a personal external testing app, add your own Google email as a test user.</li><li>Create an OAuth client with application type <strong>Web application</strong>.</li><li>Add this exact <strong>Authorized JavaScript origin</strong>:<div class="filename">${esc(location.origin)}</div></li><li>Copy the client ID here, save it, and tap Connect Google Drive. No client secret or redirect URI is needed for this browser token flow.</li><li>Allow access to Google Drive. Full Drive access is needed so two Google accounts can work in one shared folder. The app only reads and writes inside the BottleCapture Dataset folder. Take one pilot photo and confirm both its JPEG and JSON arrive before a full session.</li></ol><p class="tiny">Google may require additional consent-screen configuration. Your password stays with Google; your Google login is kept in this browser until it expires (about 1 hour) or you tap Disconnect, and is renewed quietly or with one tap, separate from the dataset.</p></details></section><section class="panel"><h2>Local safety net</h2><p>Approved photos are saved in this browser before uploading. Keep this tab open until uploads finish. Safari may pause work when the phone locks.</p><div class="notice warn">Browser storage is not a permanent backup. Clearing website data can remove unexported photos. Private browsing is unsuitable for collection.</div><div class="actions"><button class="btn secondary" data-export="all">${icon("download")} Export all photos + labels</button><button class="btn secondary" id="csvExport">Labels CSV</button><button class="btn ghost" id="persistStorage">Request persistent storage</button></div><p id="storageStatus" class="tiny"></p><hr class="divider"><h3>Use it on your iPhone</h3><ol class="steps"><li>Open this site in <strong>Safari</strong> and sign in to access your private app.</li><li>Use Share → <strong>Add to Home Screen</strong> for quick access.</li><li>Allow camera access when prompted. Start with a pilot session.</li></ol><p class="tiny">This version requires the site to load online. If the connection drops while it is open, photos can stay locally queued. Reopen online and reconnect Drive to resume.</p><hr class="divider"><h3>What stays on your device?</h3><p class="tiny">Photos, measurements and setup notes are stored locally. Connecting Drive uploads approved photos and per-photo labels to your own account. This app uses no LLM API and does not train or run your prediction model.</p></section></div>`;
 }
 function on(sel, event, fn) {
   $(sel)?.addEventListener(event, (e) => {
@@ -524,22 +536,12 @@ function bind() {
     toast("Client ID saved. Tap Connect Google Drive.");
   });
   // Start OAuth directly inside the click event to preserve Safari user activation.
-  $("#connectDrive")?.addEventListener("click", () => {
-    drive
-      .connect(settingsCache.client)
-      .then(async (u) => {
-        await loadSettings();
-        render();
-        toast(
-          "Connected as " + u.emailAddress + ". Loading your Drive dataset…",
-        );
-        await pullNow();
-        if (photos.some((p) => !p.synced)) await syncNow();
-      })
-      .catch(fail);
-  });
-  on("#disconnectDrive", "click", () => {
+  $("#connectDrive")?.addEventListener("click", connectNow);
+  $("#reconnectBadge")?.addEventListener("click", connectNow);
+  on("#disconnectDrive", "click", async () => {
     drive.disconnect();
+    await setting("driveWanted", false);
+    await loadSettings();
     render();
     toast("Disconnected. Local photos are unchanged.");
   });
@@ -858,6 +860,44 @@ async function syncNow() {
     throw e;
   }
 }
+// Sign in with one tap. Must run straight from the tap, so Safari allows the sign-in window.
+function connectNow() {
+  drive
+    .connect(settingsCache.client, settingsCache.email)
+    .then(async (u) => {
+      await setting("driveWanted", true);
+      await loadSettings();
+      render();
+      toast("Connected as " + u.emailAddress + ". Loading your Drive dataset…");
+      await pullNow();
+      if (photos.some((p) => !p.synced)) await syncNow();
+    })
+    .catch(fail);
+}
+// Renew the login quietly when it has expired or is about to, for someone who stays connected.
+// Where the browser does not allow that, the Reconnect badge stays and one tap fixes it.
+let renewing = false;
+async function keepConnected() {
+  if (renewing || !navigator.onLine || !driveWanted()) return false;
+  if (drive.connected() && drive.msLeft() > 5 * 60 * 1000) return true;
+  renewing = true;
+  try {
+    // The Google sign-in script loads late. Give it a few seconds.
+    for (let i = 0; i < 25 && !globalThis.google?.accounts?.oauth2; i++)
+      await new Promise((r) => setTimeout(r, 200));
+    await drive.renew(settingsCache.client, settingsCache.email);
+    await loadSettings();
+    if (!["shoot", "new"].includes(page) && !$("#modal").open) render();
+    if (photos.some((p) => !p.synced)) syncNow().catch(() => {});
+    return true;
+  } catch {
+    // Still shows the Reconnect badge.
+    if (!["shoot", "new"].includes(page) && !$("#modal").open) render();
+    return drive.connected();
+  } finally {
+    renewing = false;
+  }
+}
 // Switch dataset folder. Saved folder IDs belong to the old folder, so forget them.
 // Photos already uploaded stay where they are.
 async function useRoot(id) {
@@ -908,6 +948,7 @@ async function loadSettings() {
   settingsCache = {
     client: await setting("client"),
     email: await setting("driveEmail"),
+    wanted: await setting("driveWanted"),
     root: await setting("driveRoot"),
     datasetRoot: await setting("datasetRoot"),
     rootInfo:
@@ -1024,10 +1065,16 @@ window.addEventListener("beforeunload", (e) => {
 await refresh();
 await loadSettings();
 await drive.restore(settingsCache.client);
+// Someone who connected before earlier versions saved this flag: treat them as staying connected.
+if (settingsCache.wanted === undefined && settingsCache.email) {
+  await setting("driveWanted", true);
+  settingsCache.wanted = true;
+}
 render();
 // Bring in changes from other devices: on open, every 2 minutes, and when you return to the tab.
 // Skipped while capturing or with a dialog open, so the screen never changes under you.
-function autoPull() {
+async function autoPull() {
+  await keepConnected();
   if (
     drive.connected() &&
     navigator.onLine &&

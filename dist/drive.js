@@ -21,92 +21,93 @@ const ROOT_NAME = "BottleCapture Dataset";
 // collaborator marks a file or folder as deleted, and the owner's device trashes it later.
 const DELETED = "bottlecaptureDeleted";
 const sessionKey = "bottlecapture-drive-session";
+// The login is kept in localStorage, so it survives closing the tab or the browser
+// until it expires (Google logins last about 1 hour) or you tap Disconnect.
+const stores = () =>
+  [globalThis.localStorage, globalThis.sessionStorage].filter(Boolean);
 function clearSession() {
   token = "";
   expires = 0;
-  try {
-    globalThis.sessionStorage?.removeItem(sessionKey);
-  } catch {}
+  for (const st of stores()) {
+    try {
+      st.removeItem(sessionKey);
+    } catch {}
+  }
 }
 function saveSession(clientId) {
-  try {
-    globalThis.sessionStorage?.setItem(
-      sessionKey,
-      JSON.stringify({ token, expires, clientId, scope: SCOPE }),
-    );
-  } catch {}
-}
-export async function restore(clientId) {
-  try {
-    const saved = JSON.parse(
-      globalThis.sessionStorage?.getItem(sessionKey) || "null",
-    );
-    if (
-      !saved ||
-      saved.clientId !== clientId ||
-      saved.scope !== SCOPE ||
-      typeof saved.token !== "string" ||
-      !Number.isFinite(saved.expires) ||
-      saved.expires <= Date.now()
-    ) {
-      clearSession();
-      return false;
-    }
-    token = saved.token;
-    expires = saved.expires;
-    return true;
-  } catch {
-    clearSession();
-    return false;
+  const value = JSON.stringify({ token, expires, clientId, scope: SCOPE });
+  let saved = false;
+  for (const st of stores()) {
+    try {
+      if (!saved) {
+        st.setItem(sessionKey, value);
+        saved = true;
+      } else st.removeItem(sessionKey);
+    } catch {}
   }
+}
+// Milliseconds until the current login expires (0 when there is none).
+export const msLeft = () => (token ? Math.max(0, expires - Date.now()) : 0);
+export async function restore(clientId) {
+  for (const st of stores()) {
+    try {
+      const saved = JSON.parse(st.getItem(sessionKey) || "null");
+      if (
+        saved &&
+        saved.clientId === clientId &&
+        saved.scope === SCOPE &&
+        typeof saved.token === "string" &&
+        Number.isFinite(saved.expires) &&
+        saved.expires > Date.now()
+      ) {
+        token = saved.token;
+        expires = saved.expires;
+        return true;
+      }
+    } catch {}
+  }
+  clearSession();
+  return false;
 }
 export function disconnect() {
   if (token && globalThis.google)
     google.accounts.oauth2.revoke(token, () => {});
   clearSession();
 }
-export async function connect(clientId) {
-  if (!clientId?.endsWith(".apps.googleusercontent.com"))
-    throw Error("Add your Google OAuth client ID in Settings first.");
-  if (!globalThis.google?.accounts?.oauth2)
+// Accept a token from Google: check the scope and the account, then remember it.
+async function adopt(clientId, r) {
+  if (r.error) throw Error(r.error_description || r.error);
+  if (google.accounts.oauth2.hasGrantedAllScopes?.(r, SCOPE) === false)
     throw Error(
-      "Google sign-in has not loaded. Check your connection and reopen the app in Safari.",
+      "Google Drive access was not allowed. Connect again and tick the Drive access box, so the shared dataset folder can be used.",
     );
+  token = r.access_token;
+  expires = Date.now() + (Number(r.expires_in) - 60) * 1000;
+  try {
+    const about = await api(
+      "/about?fields=user(displayName,emailAddress,permissionId)",
+    );
+    const owner = await setting("driveOwner");
+    if (owner && owner !== about.user.permissionId)
+      throw Error(
+        "Connect the same Google account used for this dataset. Account switching is disabled to prevent mixed uploads.",
+      );
+    await setting("driveOwner", about.user.permissionId);
+    await setting("driveEmail", about.user.emailAddress);
+    saveSession(clientId);
+    return about.user;
+  } catch (e) {
+    clearSession();
+    throw e;
+  }
+}
+function requestToken(clientId, { prompt, hint }) {
   return new Promise((resolve, reject) => {
     const c = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
       scope: SCOPE,
-      callback: async (r) => {
-        if (r.error) return reject(Error(r.error_description || r.error));
-        if (google.accounts.oauth2.hasGrantedAllScopes?.(r, SCOPE) === false)
-          return reject(
-            Error(
-              "Google Drive access was not allowed. Connect again and tick the Drive access box, so the shared dataset folder can be used.",
-            ),
-          );
-        token = r.access_token;
-        expires = Date.now() + (Number(r.expires_in) - 60) * 1000;
-        try {
-          const about = await api(
-            "/about?fields=user(displayName,emailAddress,permissionId)",
-          );
-          const owner = await setting("driveOwner");
-          if (owner && owner !== about.user.permissionId) {
-            token = "";
-            expires = 0;
-            throw Error(
-              "Connect the same Google account used for this dataset. Account switching is disabled to prevent mixed uploads.",
-            );
-          }
-          await setting("driveOwner", about.user.permissionId);
-          await setting("driveEmail", about.user.emailAddress);
-          saveSession(clientId);
-          resolve(about.user);
-        } catch (e) {
-          clearSession();
-          reject(e);
-        }
-      },
+      ...(hint ? { hint } : {}),
+      callback: resolve,
       error_callback: (e) =>
         reject(
           Error(
@@ -116,8 +117,47 @@ export async function connect(clientId) {
           ),
         ),
     });
-    c.requestAccessToken({ prompt: "select_account" });
+    c.requestAccessToken({ prompt });
   });
+}
+// Call straight from a tap (no await before it), so Safari allows the sign-in window.
+// With a known account (hint) Google skips the account chooser: one tap.
+export async function connect(clientId, hint) {
+  if (!clientId?.endsWith(".apps.googleusercontent.com"))
+    throw Error("Add your Google OAuth client ID in Settings first.");
+  if (!globalThis.google?.accounts?.oauth2)
+    throw Error(
+      "Google sign-in has not loaded. Check your connection and reopen the app in Safari.",
+    );
+  const r = await requestToken(clientId, {
+    prompt: hint ? "" : "select_account",
+    hint,
+  });
+  return adopt(clientId, r);
+}
+// Ask Google for a fresh login without showing anything, for an account that already
+// approved this app. It works only while the Google sign-in in this browser is still
+// active and the browser allows it. Otherwise it fails quietly and the Reconnect
+// button is shown instead.
+export async function renew(clientId, hint) {
+  if (!clientId || !globalThis.google?.accounts?.oauth2)
+    throw Error("Google sign-in has not loaded.");
+  let timer;
+  try {
+    const r = await Promise.race([
+      requestToken(clientId, { prompt: "none", hint }),
+      new Promise(
+        (_, rej) =>
+          (timer = setTimeout(
+            () => rej(Error("Silent sign-in timed out.")),
+            10000,
+          )),
+      ),
+    ]);
+    return await adopt(clientId, r);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 async function api(path, options = {}) {
   if (!connected())
