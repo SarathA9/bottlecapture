@@ -354,6 +354,9 @@ export function labelFor(p, r) {
     target_water_g: target,
     water_mass_g: p.mass,
     gross_mass_g: p.gross,
+    // The fill's reading (differs only for a retake labelled with a refill weight).
+    fill_gross_mass_g: r.fills?.[p.level]?.gross ?? p.gross,
+    fill_water_mass_g: r.fills?.[p.level]?.mass ?? p.mass,
     tare_g: r.tare,
     reference_water_g: r.reference,
     scale_resolution_g: r.resolution,

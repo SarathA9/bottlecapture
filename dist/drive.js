@@ -579,6 +579,17 @@ export async function pull(onStatus = () => {}) {
       r.uploadedBy ||= sessF.owners?.[0]?.emailAddress;
       if (label.taken_at && label.taken_at < r.created)
         r.created = label.taken_at;
+      // A fill weight corrected on another device: take the corrected reading.
+      if (
+        r.fills[level] &&
+        label.fill_gross_mass_g !== undefined &&
+        label.fill_gross_mass_g !== r.fills[level].gross
+      )
+        r.fills[level] = {
+          ...r.fills[level],
+          gross: label.fill_gross_mass_g,
+          mass: label.fill_water_mass_g,
+        };
       if (!r.fills[level])
         r.fills[level] = {
           gross: label.gross_mass_g,
@@ -734,8 +745,12 @@ export async function sync(onStatus = () => {}) {
                 fillFolder(r, p.level),
                 sess,
               );
-            if (!p.cloud) {
-              p.cloud = { image: await nextId(), label: await nextId() };
+            // A corrected label keeps its uploaded image and only gets a new JSON.
+            if (!p.cloud?.image || !p.cloud?.label) {
+              p.cloud = {
+                image: p.cloud?.image || (await nextId()),
+                label: p.cloud?.label || (await nextId()),
+              };
               await put("photos", p);
             }
             const image = await ensureFile(

@@ -178,6 +178,57 @@ export async function replacePhoto(obj) {
   });
 }
 
+// Correct the measured weight of one fill. Every photo of that fill gets the new
+// label, and its old Drive label (JSON) is replaced at the next sync.
+export async function correctFill(runId, level, gross, mass) {
+  const d = await ready;
+  return new Promise((resolve, reject) => {
+    const t = d.transaction(["runs", "photos", "settings"], "readwrite"),
+      runs = t.objectStore("runs"),
+      photos = t.objectStore("photos"),
+      old = [];
+    let changed = 0;
+    const q = runs.get(runId);
+    q.onsuccess = () => {
+      const r = q.result;
+      if (!r?.fills?.[level]) {
+        t.abort();
+        return;
+      }
+      r.fills[level] = {
+        ...r.fills[level],
+        gross,
+        mass,
+        correctedAt: new Date().toISOString(),
+      };
+      runs.put(r);
+      const c = photos.openCursor();
+      c.onsuccess = () => {
+        const cur = c.result;
+        if (!cur) {
+          queueTrash(t.objectStore("settings"), old);
+          return;
+        }
+        const p = cur.value;
+        if (p.run === runId && p.level === level && !p.refillMeasuredAt) {
+          if (p.cloud?.label) old.push(p.cloud.label);
+          cur.update({
+            ...p,
+            gross,
+            mass,
+            synced: false,
+            ...(p.cloud ? { cloud: { image: p.cloud.image } } : {}),
+          });
+          changed++;
+        }
+        cur.continue();
+      };
+    };
+    t.oncomplete = () => resolve(changed);
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error || Error("This fill no longer exists."));
+  });
+}
 export async function restartRun(id, newId) {
   const d = await ready;
   return new Promise((resolve, reject) => {

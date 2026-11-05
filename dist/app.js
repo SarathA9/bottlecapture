@@ -29,6 +29,7 @@ import {
   restartRun,
   deleteRun,
   replacePhoto,
+  correctFill,
   remove,
 } from "./db.js";
 import { zip } from "./zip.js";
@@ -52,6 +53,8 @@ let runs = [],
   // Fill used for a retake when the bottle was refilled and reweighed.
   retakeFill = null,
   refillPending = null,
+  // A reading that looks wrong for a new fill (empty bottle, or far from the suggestion).
+  farPending = null,
   // Protocol 2: suggested pour for a new fill, extra photos past the goal, imported batch.
   pendingTarget = null,
   extraShots = false,
@@ -159,6 +162,20 @@ function reconnectBadge() {
   if (driveWanted() && navigator.onLine)
     return `<button class="badge warn" id="reconnectBadge"><i class="dot"></i>Tap to reconnect Drive${waiting ? ` · ${waiting} waiting` : ""}</button>`;
   return `<span class="badge warn"><i class="dot"></i>${navigator.onLine ? "Local collection" : "Offline"}${waiting ? ` · ${waiting} waiting` : ""}</span>`;
+}
+// For a new fill: is this balance reading likely a mistake?
+function readingWarning(n) {
+  if (!isV2(current) || retake || current.fills?.[level]) return "";
+  const r = current,
+    target = pendingTarget;
+  if (n <= r.resolution && (target ?? 0) > r.resolution)
+    return `That is the empty bottle weight (${grams(r.tare)} g), so the label would be 0 g water. Pour the water first, then weigh the filled bottle.`;
+  if (
+    target !== null &&
+    Math.abs(n - target) > Math.max(0.25 * r.reference, 50)
+  )
+    return `The suggestion was about ${grams(target)} g. Hitting it is not required, but check the reading.`;
+  return "";
 }
 function activeFill() {
   return retakeFill || current.fills[level];
@@ -396,7 +413,7 @@ function v2ShootPage() {
         bottleFills(r.bottle, r.split),
       );
     const sameBlock = f
-      ? `<div class="notice">This fill was weighed at <strong>${grams(f.mass)} g</strong> water (${grams(f.gross)} g on the balance). If you have not poured anything in or out, continue straight away.</div><label class="check"><input type="checkbox" id="sameWaterOk">I have not added or removed water since then.</label><button class="btn" type="button" id="sameWater" disabled>Continue with ${grams(f.mass)} g ${icon("arrow")}</button><hr class="divider"><h3>Not sure? Weigh again</h3>`
+      ? `<div class="notice">This fill was weighed at <strong>${grams(f.mass)} g</strong> water (${grams(f.gross)} g on the balance). If you have not poured anything in or out, continue straight away.</div><label class="check"><input type="checkbox" id="sameWaterOk">I have not added or removed water since then.</label><button class="btn" type="button" id="sameWater" disabled>Continue with ${grams(f.mass)} g ${icon("arrow")}</button><button class="text-link" id="correctFill">Saved weight is wrong? Correct it</button><hr class="divider"><h3>Not sure? Weigh again</h3>`
       : "";
     return `${header(
       retake
@@ -411,7 +428,7 @@ function v2ShootPage() {
   }
   // 2. Enough photos of this fill: offer the next step.
   if (!retake && n >= goal && !extraShots)
-    return `${header(`${fillName} done · ${grams(f.mass)} g`, `${n} photos saved. Now change the water and weigh the next fill.`)}<section class="panel"><div class="actions"><button class="btn" data-newfill="1">${icon("plus")} Weigh the next fill</button><button class="btn secondary" id="moreShots">Take more of this fill</button><button class="btn ghost" id="backSession">Back to session</button></div><p class="tiny">${photos.filter((p) => p.run === r.id && p.level === level && !p.synced).length} photos of this fill still need a Drive upload or local export.</p></section>`;
+    return `${header(`${fillName} done · ${grams(f.mass)} g`, `${n} photos saved. Now change the water and weigh the next fill.`)}<section class="panel"><div class="actions"><button class="btn" data-newfill="1">${icon("plus")} Weigh the next fill</button><button class="btn secondary" id="moreShots">Take more of this fill</button><button class="btn ghost" id="correctFill">Correct weight</button><button class="btn ghost" id="backSession">Back to session</button></div><p class="tiny">${photos.filter((p) => p.run === r.id && p.level === level && !p.synced).length} photos of this fill still need a Drive upload or local export.</p></section>`;
   // 3. Shoot.
   const shot = retake ? retake.shot : nextShot(r, level);
   activeShot = shot;
@@ -423,7 +440,7 @@ function v2ShootPage() {
           .filter(Boolean),
       ),
     ];
-  return `${header(`${retake ? "Retake · " : ""}${fillName} · photo ${shot + 1}${retake ? "" : ` of ~${goal}`}`, `Water: ${grams(f.mass)} g · The model only sees the photo.`, `<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">${esc(pl.text)}</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn" style="width:100%;margin:12px 0 6px;cursor:pointer">${icon("capture")} Take photo with phone camera<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label>${retake ? "" : `<label class="btn secondary" style="width:100%;margin:0 0 12px;cursor:pointer">${icon("dataset")} Import several photos of this fill<input id="fileBatch" type="file" accept="image/*" multiple hidden></label>`}<div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">Next shot</div><h2 class="instruction">${esc(pl.text)}</h2><ol class="steps"><li>Bottle upright, original label on, cap on.</li><li>Whole bottle in the frame, cap to base. A busy background is fine.</li><li>No balance, jug, cups or written numbers in view.</li><li>Tap to focus on the bottle. Normal 1× lens. No flash, no portrait mode.</li></ol><p class="tiny">Spots used for this fill: ${used.length ? used.map(esc).join(", ") : "none yet"}. Aim for at least four different spots per fill.</p><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div></section></div>`;
+  return `${header(`${retake ? "Retake · " : ""}${fillName} · photo ${shot + 1}${retake ? "" : ` of ~${goal}`}`, `Water: ${grams(f.mass)} g · The model only sees the photo.`, `${retake ? "" : '<button class="btn ghost small" id="correctFill">Correct weight</button>'}<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">${esc(pl.text)}</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn" style="width:100%;margin:12px 0 6px;cursor:pointer">${icon("capture")} Take photo with phone camera<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label>${retake ? "" : `<label class="btn secondary" style="width:100%;margin:0 0 12px;cursor:pointer">${icon("dataset")} Import several photos of this fill<input id="fileBatch" type="file" accept="image/*" multiple hidden></label>`}<div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">Next shot</div><h2 class="instruction">${esc(pl.text)}</h2><ol class="steps"><li>Bottle upright, original label on, cap on.</li><li>Whole bottle in the frame, cap to base. A busy background is fine.</li><li>No balance, jug, cups or written numbers in view.</li><li>Tap to focus on the bottle. Normal 1× lens. No flash, no portrait mode.</li></ol><p class="tiny">Spots used for this fill: ${used.length ? used.map(esc).join(", ") : "none yet"}. Aim for at least four different spots per fill.</p><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div></section></div>`;
 }
 function tagForm(pl, spot, batch) {
   const mixed = batch ? [["mixed", "Mixed"]] : [];
@@ -774,11 +791,15 @@ function bind() {
   on("#massForm input[name=gross]", "input", (e) => {
     try {
       refillPending = null;
+      farPending = null;
       $("#massPreview").className = "notice";
       $("#massSubmit").innerHTML = `Confirm & start photos ${icon("arrow")}`;
-      const n = waterMass(current, level, mass(e.target.value));
-      $("#massPreview").textContent =
-        `Net water mass: ${grams(n)} g. This is the training label.`;
+      const n = waterMass(current, level, mass(e.target.value)),
+        warn = readingWarning(n);
+      $("#massPreview").textContent = warn
+        ? `Net water mass: ${grams(n)} g. ${warn}`
+        : `Net water mass: ${grams(n)} g. This is the training label.`;
+      if (warn) $("#massPreview").className = "notice warn";
     } catch {
       $("#massPreview").textContent = "Enter a valid filled bottle + cap mass.";
     }
@@ -790,6 +811,16 @@ function bind() {
       n = waterMass(current, level, gross),
       f = current.fills[level];
     retakeFill = null;
+    const warn = !f && readingWarning(n);
+    if (warn && farPending !== gross) {
+      farPending = gross;
+      $("#massPreview").className = "notice warn";
+      $("#massPreview").textContent =
+        `Net water mass: ${grams(n)} g. ${warn} If the reading is right, tap the button again.`;
+      $("#massSubmit").textContent = `Yes, use ${grams(n)} g water`;
+      return;
+    }
+    farPending = null;
     if (f && Math.abs(gross - f.gross) > current.resolution) {
       if (!retake)
         throw Error(
@@ -843,6 +874,7 @@ function bind() {
     verified = true;
     render();
   });
+  on("#correctFill", "click", openCorrect);
   on("#startCamera", "click", startCamera);
   on("#fileCamera", "click", () => {
     filePickerOpen = true;
@@ -1220,6 +1252,52 @@ async function syncNow() {
     if ($("#syncStatus")) $("#syncStatus").textContent = syncMessage;
     throw e;
   }
+}
+// Fix the weight of the current fill, for example when the empty bottle weight was
+// entered by mistake. All photos of the fill get the new label, also on Drive.
+function openCorrect() {
+  const r = current,
+    f = r.fills?.[level],
+    n = done(r, level),
+    name = `F${String(level).padStart(2, "0")}`,
+    d = $("#modal");
+  if (!f) return;
+  d.innerHTML = `<h2>Correct the weight of ${name}</h2><p>Saved now: <strong>${grams(f.mass)} g water</strong> (${grams(f.gross)} g on the balance, empty bottle ${grams(r.tare)} g).</p><div class="notice warn">Only do this if the water in the bottle is still exactly what is in ${n ? `these ${n} photos` : "this fill"}. If you already poured water in or out, the true weight is lost: delete those photos instead.</div><form id="correctForm">${field("Filled bottle + cap (g)", "gross", "", "Put the bottle with its cap on the balance and enter the reading.", "decimal")}<div id="correctPreview" class="notice">The new water mass will appear here.</div><div class="actions"><button class="btn" type="submit" id="saveCorrect">Save new weight</button><button class="btn secondary" type="button" id="cancelCorrect">Cancel</button></div></form>${n ? `<p class="tiny">${n} photos get the new label here and on Google Drive at the next sync.</p>` : ""}`;
+  d.showModal();
+  $("#cancelCorrect").onclick = () => d.close();
+  const input = d.querySelector("[name=gross]");
+  input.oninput = () => {
+    try {
+      $("#correctPreview").textContent =
+        `New water mass: ${grams(waterMass(r, level, mass(input.value)))} g.`;
+    } catch (e) {
+      $("#correctPreview").textContent = e.message;
+    }
+  };
+  $("#correctForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const button = $("#saveCorrect");
+    button.disabled = true;
+    try {
+      const gross = mass(input.value),
+        water = waterMass(r, level, gross);
+      const changed = await drive.exclusive(() =>
+        correctFill(r.id, level, gross, water),
+      );
+      d.close();
+      await refresh();
+      current = runs.find((x) => x.id === r.id) || current;
+      render();
+      toast(
+        `${name} is now ${grams(water)} g water${changed ? ` · ${changed} photos relabelled` : ""}.`,
+      );
+      if (changed && drive.connected() && navigator.onLine)
+        syncNow().catch(fail);
+    } catch (err) {
+      button.disabled = false;
+      fail(err);
+    }
+  };
 }
 // Sign in with one tap. Must run straight from the tap, so Safari allows the sign-in window.
 function connectNow() {

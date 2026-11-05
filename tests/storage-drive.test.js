@@ -862,3 +862,99 @@ console.log(
     "PASS: login survives closing the browser, one-tap connect skips the chooser, silent renew works or fails safely, disconnect clears it.",
   );
 }
+
+// Correct a fill weight after its photos were uploaded (empty-bottle reading typed by mistake).
+{
+  const db = await import("../dist/db.js");
+  const wipe = async () => {
+    for (const store of ["runs", "photos", "settings"])
+      for (const x of await all(store)) await db.remove(store, x.id);
+  };
+  await wipe();
+  me = "test@example.invalid";
+  await connect("test.apps.googleusercontent.com");
+  const run = {
+    ...r,
+    id: "runC",
+    session: "S30",
+    bottle: "B02",
+    tare: 364,
+    protocol: 2,
+    fills: { 1: { gross: 364, mass: 0, target: 440 } },
+  };
+  await db.put("runs", run);
+  for (const shot of [0, 1])
+    await db.addPhoto({
+      ...p,
+      id: `runC:1:${shot}`,
+      run: "runC",
+      level: 1,
+      shot,
+      mass: 0,
+      gross: 364,
+      name: `B02_S30_F01_P0${shot + 1}.jpg`,
+      blob: new Blob(["img" + shot], { type: "image/jpeg" }),
+    });
+  await sync();
+  const before = await get("photos", "runC:1:0");
+  assert.equal(before.synced, true);
+  // Second device loads it first, with the wrong 0 g label.
+  const deviceA = {};
+  for (const store of ["runs", "photos", "settings"])
+    deviceA[store] = await all(store);
+  await wipe();
+  await db.setting("driveOwner", "test-owner");
+  await drv.pull();
+  assert.equal((await get("photos", "runC:1:0")).mass, 0);
+  const deviceB = {};
+  for (const store of ["runs", "photos", "settings"])
+    deviceB[store] = await all(store);
+  // Device A corrects: the bottle really held 440 g of water.
+  await wipe();
+  for (const store of ["runs", "photos", "settings"])
+    for (const x of deviceA[store]) await db.put(store, x);
+  const changed = await drv.exclusive(() =>
+    db.correctFill("runC", 1, 804, 440),
+  );
+  assert.equal(changed, 2);
+  const fixed = await get("photos", "runC:1:0");
+  assert.equal(fixed.mass, 440);
+  assert.equal(fixed.synced, false);
+  assert.equal(
+    fixed.cloud.image,
+    before.cloud.image,
+    "the uploaded photo is kept",
+  );
+  assert.equal((await get("runs", "runC")).fills[1].mass, 440);
+  await sync();
+  const after = await get("photos", "runC:1:0");
+  assert.equal(after.synced, true);
+  assert.equal(
+    after.cloud.image,
+    before.cloud.image,
+    "no second copy of the image",
+  );
+  assert.notEqual(after.cloud.label, before.cloud.label);
+  assert.equal(JSON.parse(files.get(after.cloud.label).data).water_mass_g, 440);
+  assert.equal(
+    files.get(before.cloud.label).trashed,
+    true,
+    "old 0 g label removed",
+  );
+  assert.equal(
+    [...files.values()].filter((f) => f.name === before.name && !f.trashed)
+      .length,
+    1,
+  );
+  // Device B picks up the corrected label and fill weight.
+  await wipe();
+  for (const store of ["runs", "photos", "settings"])
+    for (const x of deviceB[store]) await db.put(store, x);
+  await drv.pull();
+  assert.equal((await get("photos", "runC:1:0")).mass, 440);
+  assert.equal((await get("photos", "runC:1:1")).mass, 440);
+  assert.equal((await get("runs", "runC")).fills[1].mass, 440);
+  console.log(
+    "PASS: correcting a fill weight relabels its photos locally and on Drive, keeps the images, and other devices follow.",
+  );
+}
