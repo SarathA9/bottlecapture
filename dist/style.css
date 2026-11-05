@@ -1103,3 +1103,88 @@ button.badge {
   font: inherit;
   cursor: pointer;
 }
+/* Protocol 2: tag chips, coverage bars, batch import */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.chip {
+  position: relative;
+  display: inline-flex;
+}
+.chip input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.chip span {
+  display: inline-block;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.chip input:checked + span {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+.chip input:focus-visible + span {
+  outline: 3px solid #95b77c;
+  outline-offset: 2px;
+}
+.cov {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+  height: 64px;
+  align-items: end;
+  margin-top: 10px;
+}
+.cov-col {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+}
+.cov-col i {
+  display: block;
+  width: 100%;
+  background: var(--green);
+  border-radius: 4px 4px 0 0;
+}
+.cov-col i.none {
+  background: #f0d9b5;
+}
+.cov-col small {
+  font-size: 10px;
+  color: var(--muted);
+}
+.cov-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.batch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
+  margin: 12px 0;
+}
+.batch-grid img {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: 8px;
+}

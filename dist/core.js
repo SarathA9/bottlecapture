@@ -32,6 +32,7 @@ export const bottles = [
     cap: "#a9aba0",
   },
 ];
+// Legacy fixed views (first protocol). Kept so older sessions still work.
 export const shots = [
   [
     "A",
@@ -94,6 +95,119 @@ export const shots = [
     "Front · off centre",
   ],
 ];
+// Protocol 2: copy the professor's validation photos. One weighed fill, many
+// different spots in the creative space, the bottle turned every way.
+export const PROTOCOL = 2;
+export const spots = [
+  "Desk",
+  "Table",
+  "Window sill",
+  "Chair",
+  "Shelf",
+  "Floor / carpet",
+  "Box / crate",
+  "Near plants",
+  "In hand",
+  "Other",
+];
+export const tagOptions = {
+  facing: [
+    ["front", "Front label"],
+    ["side", "Side"],
+    ["back", "Back label"],
+  ],
+  camHeight: [
+    ["low", "Low"],
+    ["eye", "Bottle height"],
+    ["high", "From above"],
+  ],
+  distance: [
+    ["near", "Close"],
+    ["mid", "Medium"],
+    ["far", "Far"],
+  ],
+};
+// A rotating shot plan. Each photo of a fill gets the next prompt, and each fill
+// starts at a different point, so every combination appears across the dataset.
+export const plan = [
+  {
+    facing: "front",
+    camHeight: "eye",
+    distance: "mid",
+    text: "Pick a new spot. Front label towards you. Phone at bottle height.",
+  },
+  {
+    facing: "back",
+    camHeight: "eye",
+    distance: "mid",
+    same: true,
+    text: "Same spot. Turn the bottle so the back label faces you.",
+  },
+  {
+    facing: "side",
+    camHeight: "high",
+    distance: "mid",
+    text: "New spot. Side view. Hold the phone a little above and look down.",
+  },
+  {
+    facing: "front",
+    camHeight: "low",
+    distance: "near",
+    text: "New spot. Close up: the bottle fills most of the frame height. Phone low.",
+  },
+  {
+    spot: "In hand",
+    facing: "side",
+    camHeight: "eye",
+    distance: "mid",
+    text: "Hold the bottle upright in your hand. Keep the water still.",
+  },
+  {
+    facing: "back",
+    camHeight: "eye",
+    distance: "far",
+    text: "New spot, ideally by a window. Step back: bottle about 40% of the frame height.",
+  },
+  {
+    facing: "side",
+    camHeight: "high",
+    distance: "far",
+    text: "New spot. Phone high, looking down steeply. Whole bottle visible.",
+  },
+  {
+    facing: "front",
+    camHeight: "eye",
+    distance: "near",
+    text: "New spot. Turn the bottle a quarter turn, then shoot from slightly off centre.",
+  },
+];
+export const planFor = (fill, photo) => plan[(photo + fill * 3) % plan.length];
+// Ten equal bins from empty to the full reference, for coverage.
+export const BINS = 10;
+export function binOf(massG, reference) {
+  if (!(reference > 0)) return 0;
+  return Math.max(
+    0,
+    Math.min(BINS - 1, Math.floor((massG / reference) * BINS)),
+  );
+}
+export function coverage(fills, reference) {
+  const c = Array(BINS).fill(0);
+  for (const f of fills) c[binOf(f.mass, reference)]++;
+  return c;
+}
+// Suggest the next pour. Choose the least-covered tenth of the range (ties at
+// random), then a random amount inside it, so masses are spread evenly and are
+// never stuck on round 10% steps. The real balance reading is the label.
+export function suggestTarget(reference, fills, rand = Math.random) {
+  const c = coverage(fills, reference),
+    low = Math.min(...c),
+    choices = c.map((n, i) => (n === low ? i : -1)).filter((i) => i >= 0),
+    bin = choices[Math.floor(rand() * choices.length)];
+  if (bin === 0 && rand() < 0.3) return 0;
+  const g = ((bin + rand()) / BINS) * reference;
+  return Math.max(0, Math.round(g / 5) * 5);
+}
 export const esc = (s) =>
   String(s ?? "").replace(
     /[&<>"']/g,
@@ -111,16 +225,31 @@ export const mass = (s) => {
 };
 export const grams = (n) =>
   Number(n).toLocaleString(undefined, { maximumFractionDigits: 3 });
-export const countShots = (r) => (r.split === "train" ? 10 : 5);
+// Photos to take of each fill. More are allowed.
+export const countShots = (r) =>
+  r.protocol === PROTOCOL
+    ? r.split === "train"
+      ? 8
+      : 4
+    : r.split === "train"
+      ? 10
+      : 5;
+// Measured fills to aim for per bottle and split.
+export const fillGoal = { train: 60, validation: 12, holdout: 12 };
+const pad = (n) => String(n).padStart(2, "0");
+const fillTag = (r, l) => (r.protocol === PROTOCOL ? "F" : "L") + pad(l);
+const shotTag = (r, s) =>
+  r.protocol === PROTOCOL ? "P" + pad(s + 1) : `${shots[s][0]}_${pad(s + 1)}`;
 export const token = (s) => {
   if (!/^[A-Za-z0-9_-]{1,24}$/.test(s))
     throw Error("Use 1–24 letters, numbers, underscores or hyphens for IDs.");
   return s;
 };
 export const photoName = (r, l, s) =>
-  `${r.bottle}_${r.instance}_${r.session}_${r.id.slice(0, 8)}_L${String(l).padStart(2, "0")}_${shots[s][0]}_${String(s + 1).padStart(2, "0")}.jpg`;
+  `${r.bottle}_${r.instance}_${r.session}_${r.id.slice(0, 8)}_${fillTag(r, l)}_${shotTag(r, s)}.jpg`;
 export const photoPath = (r, l, s) =>
-  `images/${r.bottle}/${r.instance}/${r.session}_${r.id.slice(0, 8)}/L${String(l).padStart(2, "0")}/${photoName(r, l, s)}`;
+  `images/${r.bottle}/${r.instance}/${r.session}_${r.id.slice(0, 8)}/${fillTag(r, l)}/${photoName(r, l, s)}`;
+export const fillFolder = fillTag;
 export function checkRun(r, runs) {
   token(r.instance);
   token(r.session);
@@ -134,8 +263,7 @@ export function checkRun(r, runs) {
     throw Error(
       "Reference water mass and scale step must be greater than zero.",
     );
-  if (!r.background.trim() || !r.lighting.trim())
-    throw Error("Describe the background and lighting.");
+  if (!String(r.lighting || "").trim()) throw Error("Choose the lighting.");
   if (runs.some((x) => x.setup === r.setup && x.split !== r.split))
     throw Error(
       "This setup ID belongs to another split. Use an independently photographed setup for validation or holdout.",
@@ -160,7 +288,7 @@ export function waterMass(r, level, gross) {
     throw Error(
       "This is more than 115% of the full reference. Check the balance reading.",
     );
-  if (level === 0 && n > r.resolution)
+  if (r.protocol !== PROTOCOL && level === 0 && n > r.resolution)
     throw Error("Level 0 should be empty, within one scale step.");
   return n;
 }
@@ -174,6 +302,7 @@ export function csv(rows) {
     "setup_id",
     "split",
     "level_index",
+    "fill_id",
     "target_percent",
     "target_water_g",
     "water_mass_g",
@@ -182,6 +311,10 @@ export function csv(rows) {
     "reference_water_g",
     "scale_resolution_g",
     "view",
+    "spot",
+    "label_facing",
+    "camera_height",
+    "distance",
     "visibility",
     "background",
     "lighting",
@@ -190,6 +323,7 @@ export function csv(rows) {
     "bytes",
     "taken_at",
     "photo_id",
+    "protocol",
   ];
   return [
     fields.join(","),
@@ -201,6 +335,9 @@ export function csv(rows) {
   ].join("\r\n");
 }
 export function labelFor(p, r) {
+  const v2 = r.protocol === PROTOCOL,
+    target =
+      p.target ?? r.fills?.[p.level]?.target ?? (r.reference * p.level) / 10;
   return {
     filename: p.name,
     relative_path: p.path,
@@ -210,14 +347,23 @@ export function labelFor(p, r) {
     setup_id: r.setup,
     split: r.split,
     level_index: p.level,
-    target_percent: p.level * 10,
-    target_water_g: (r.reference * p.level) / 10,
+    fill_id: `${r.bottle}_${r.instance}_${r.session}_${r.id.slice(0, 8)}_${fillTag(r, p.level)}`,
+    target_percent: v2
+      ? Math.round((target / r.reference) * 1000) / 10
+      : p.level * 10,
+    target_water_g: target,
     water_mass_g: p.mass,
     gross_mass_g: p.gross,
     tare_g: r.tare,
     reference_water_g: r.reference,
     scale_resolution_g: r.resolution,
-    view: shots[p.shot][0],
+    view: v2
+      ? `${p.facing || ""}/${p.camHeight || ""}/${p.distance || ""}`
+      : shots[p.shot]?.[0],
+    spot: p.spot || "",
+    label_facing: p.facing || "",
+    camera_height: p.camHeight || "",
+    distance: p.distance || "",
     visibility: p.visibility,
     background: r.background,
     lighting: r.lighting,
@@ -226,6 +372,7 @@ export function labelFor(p, r) {
     bytes: p.blob.size,
     taken_at: p.takenAt,
     photo_id: p.id,
+    protocol: r.protocol || 1,
   };
 }
 

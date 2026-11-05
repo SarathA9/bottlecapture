@@ -8,7 +8,7 @@ import {
   unqueueTrash,
   queueTrashIds,
 } from "./db.js";
-import { labelFor } from "./core.js";
+import { labelFor, fillFolder } from "./core.js";
 let token = "",
   expires = 0,
   busy = false;
@@ -572,6 +572,9 @@ export async function pull(onStatus = () => {}) {
           created: label.taken_at,
           fills: {},
           importedFromDrive: new Date().toISOString(),
+          ...(Number(label.protocol) > 1
+            ? { protocol: Number(label.protocol) }
+            : {}),
         };
       r.uploadedBy ||= sessF.owners?.[0]?.emailAddress;
       if (label.taken_at && label.taken_at < r.created)
@@ -581,6 +584,9 @@ export async function pull(onStatus = () => {}) {
           gross: label.gross_mass_g,
           mass: label.water_mass_g,
           measuredAt: label.taken_at,
+          ...(Number(label.protocol) > 1
+            ? { target: label.target_water_g }
+            : {}),
         };
       await put("runs", r);
       for (const [key, id] of [
@@ -601,6 +607,11 @@ export async function pull(onStatus = () => {}) {
         mass: label.water_mass_g,
         gross: label.gross_mass_g,
         visibility: label.visibility,
+        ...(label.spot ? { spot: label.spot } : {}),
+        ...(label.label_facing ? { facing: label.label_facing } : {}),
+        ...(label.camera_height ? { camHeight: label.camera_height } : {}),
+        ...(label.distance ? { distance: label.distance } : {}),
+        ...(Number(label.protocol) > 1 ? { target: label.target_water_g } : {}),
         blob: new Blob([blob], { type: "image/jpeg" }),
         width: label.width,
         height: label.height,
@@ -720,7 +731,7 @@ export async function sync(onStatus = () => {}) {
               ),
               level = await folder(
                 r.id + "/" + p.level,
-                "L" + String(p.level).padStart(2, "0"),
+                fillFolder(r, p.level),
                 sess,
               );
             if (!p.cloud) {

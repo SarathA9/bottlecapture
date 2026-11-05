@@ -3,9 +3,11 @@
 A private, mobile-first web application for collecting a four-bottle water-mass dataset. Browser-native ES modules, IndexedDB, Google Identity Services, and Google Drive v3. No LLM API, backend photo storage, or prediction model is included.
 
 ## Use
-Open the published HTTPS site in Safari. Settings contains the one-time Google OAuth setup. Create a session, enter tare and measured full-reference net water mass, choose a target level, enter the gross balance reading, and follow each view. Review visibility and quality before Save & Next. That button commits original JPEG bytes (or converts other supported formats to JPEG) to IndexedDB, then queues Drive upload when connected.
+Open the published HTTPS site on your phone. Settings contains the one-time Google OAuth setup. Create a session (bottle, physical bottle ID, split, tare, full reference). Tap **Weigh a new fill**: the app suggests a random amount to pour, you weigh it and enter the balance reading. Then take about 8 photos (4 for validation/holdout) in different spots, following the shot prompt, and tag each photo in a few taps. Pour water in or out and weigh again for the next fill.
 
-Drive creates BottleCapture Dataset / bottle / physical instance / unique session / fill level. Each JPEG has a JSON sidecar with its measured grams and metadata. Local ZIP export contains images/, labels.csv and index.json. Export per session on phones. No local records are auto-deleted.
+Photos can be taken with the phone camera one at a time, with the live camera, or shot in bulk with the phone camera app and imported together as one fill. Save commits original JPEG bytes (or converts other formats to JPEG) to IndexedDB, then queues Drive upload when connected.
+
+Drive creates BottleCapture Dataset / bottle / physical instance / unique session / fill (F01, F02…). Each JPEG has a JSON sidecar with its measured grams and tags. Local ZIP export contains images/, labels.csv and index.json. No local records are auto-deleted.
 
 ## Google setup
 1. Create your own Google Cloud project and enable Google Drive API.
@@ -23,8 +25,16 @@ Safari can pause uploads when backgrounded. Keep the app open until sync complet
 
 Images are only manually reviewed: the app cannot verify mass, focus, identity, angle, or hidden water level. A live video-frame capture may be lower resolution than the iPhone's native still camera. Use the native camera input where possible. Check EXIF orientation in your model loader. Never train on the bundled generated framing illustrations.
 
-## Collection
-Four bottle types, 11 target levels, actual grams for each fill, ten views for training and five for validation/holdout. Three training sessions plus one validation and one holdout per bottle = 440 photos/bottle, 1,760 total. Split by independent setup groups; professor-provided validation and test are separate. No model accuracy guarantee.
+## Collection (protocol 2)
+Built to match the professor's validation photos: every image is taken in a different spot of the creative space (DC 3rd floor), with the bottle turned to any side, at varied heights and distances, sometimes held in a hand, with continuous masses from near empty to full.
+
+- **Fills, not levels.** Each fill is one balance reading. The suggested pour comes from the least-covered tenth of the range for that bottle and split (random within it), so masses spread evenly and never sit on 10% steps.
+- **Many spots per fill.** A rotating 8-step shot plan prompts a new spot, label side (front/side/back), camera height (low/bottle height/above) and distance. Each fill starts at a different plan step.
+- **Tags per photo.** spot, label_facing, camera_height, distance, visibility, plus fill_id, target_water_g and protocol in labels.csv. Use them for error analysis, not as model inputs.
+- **Goal per bottle:** about 60 training fills × 8 photos, 12 validation and 12 holdout fills × 4 photos on other days. Use 2–3 physical bottles per type.
+- **Leakage.** Group splits by fill_id (or session). All photos of one fill share one water level.
+
+Sessions created before protocol 2 keep the old 11-level, fixed-view workflow and filenames (L03_A_01).
 
 ## Verification
 `npm ci && npm test` runs calculations, naming, split validation, ZIP CRC, IndexedDB and mocked Drive retry tests. Browser QA verified creation, 11 levels, 224.7 g measured vs 225 g target, photo review, Save & Next, stored photo after reload and ZIP preparation. Live iPhone camera, iOS share/download completion, Google consent and actual cloud upload are not device-tested. Cloud browser download automation timed out after ZIP preparation; ZIP creation/contents passed a separate Python check.

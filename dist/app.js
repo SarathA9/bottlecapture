@@ -12,6 +12,13 @@ import {
   csv,
   labelFor,
   uuid,
+  PROTOCOL,
+  spots,
+  tagOptions,
+  planFor,
+  coverage,
+  suggestTarget,
+  fillGoal,
 } from "./core.js";
 import {
   all,
@@ -44,7 +51,11 @@ let runs = [],
   retake = null,
   // Fill used for a retake when the bottle was refilled and reweighed.
   retakeFill = null,
-  refillPending = null;
+  refillPending = null,
+  // Protocol 2: suggested pour for a new fill, extra photos past the goal, imported batch.
+  pendingTarget = null,
+  extraShots = false,
+  batch = null;
 const $ = (s) => document.querySelector(s),
   $$ = (s) => [...document.querySelectorAll(s)];
 const paths = {
@@ -111,6 +122,7 @@ function nav(p) {
     retakeFill = null;
   }
   refillPending = null;
+  batch = null;
   page = p;
   render();
   window.scrollTo(0, 0);
@@ -152,6 +164,14 @@ function activeFill() {
   return retakeFill || current.fills[level];
 }
 function nextShot(r, l) {
+  if (r.protocol === PROTOCOL) {
+    const used = new Set(
+      photos.filter((p) => p.run === r.id && p.level === l).map((p) => p.shot),
+    );
+    let i = 0;
+    while (used.has(i)) i++;
+    return i;
+  }
   return Array.from({ length: countShots(r) }, (_, i) => i).find(
     (i) => !photos.some((p) => p.run === r.id && p.level === l && p.shot === i),
   );
@@ -190,12 +210,14 @@ function render() {
 }
 function home() {
   const synced = photos.filter((p) => p.synced).length;
-  return `${header("Your next great dataset.", "A little structure. Better photos. More reliable research.", `<button class="btn" data-new="B04">${icon("plus")} New session</button>`)}<section class="hero"><div class="hero-copy"><div class="eyebrow">Built for your bottle project</div><h2>One bottle.<br>Eleven levels.<br>Every detail in place.</h2><p>Follow the shot guide, record the water mass and build a dataset you can trust.</p><button class="btn light" data-new="B04">Start collecting ${icon("arrow")}</button></div><div class="hero-art">${bottles.map(bottleSvg).join("")}</div></section><div class="stats"><div class="stat"><div class="stat-top">Photos collected ${iconSmall("capture")}</div><strong>${photos.length.toLocaleString()}</strong><small>of 1,760 planned across all bottles</small></div><div class="stat"><div class="stat-top">Bottles covered ${iconSmall("dataset")}</div><strong>${new Set(photos.map((p) => runs.find((r) => r.id === p.run)?.bottle)).size}<span class="muted" style="font-size:16px"> / 4</span></strong><small>Each bottle has its own identity</small></div><div class="stat"><div class="stat-top">Saved to Drive ${iconSmall("cloud")}</div><strong>${synced}</strong><small>${photos.length - synced} photos waiting to sync</small></div><div class="stat"><div class="stat-top">Sessions ${iconSmall("check")}</div><strong>${runs.length}</strong><small>${runs.filter((r) => done(r) === 11 * countShots(r)).length} fully photographed</small></div></div><div class="section-head"><h2>Your four bottles</h2><small>Select a bottle to begin</small></div><div class="bottles">${bottles
+  return `${header("Your next great dataset.", "A little structure. Better photos. More reliable research.", `<button class="btn" data-new="B04">${icon("plus")} New session</button>`)}<section class="hero"><div class="hero-copy"><div class="eyebrow">Built for your bottle project</div><h2>Weigh once.<br>Shoot everywhere.<br>Repeat.</h2><p>Pour a random amount, weigh it, then photograph the bottle in many spots of the creative space.</p><button class="btn light" data-new="B04">Start collecting ${icon("arrow")}</button></div><div class="hero-art">${bottles.map(bottleSvg).join("")}</div></section><div class="stats"><div class="stat"><div class="stat-top">Photos collected ${iconSmall("capture")}</div><strong>${photos.length.toLocaleString()}</strong><small>${runs.reduce((n, r) => n + (r.archived ? 0 : Object.keys(r.fills || {}).length), 0)} measured fills so far</small></div><div class="stat"><div class="stat-top">Bottles covered ${iconSmall("dataset")}</div><strong>${new Set(photos.map((p) => runs.find((r) => r.id === p.run)?.bottle)).size}<span class="muted" style="font-size:16px"> / 4</span></strong><small>Each bottle has its own identity</small></div><div class="stat"><div class="stat-top">Saved to Drive ${iconSmall("cloud")}</div><strong>${synced}</strong><small>${photos.length - synced} photos waiting to sync</small></div><div class="stat"><div class="stat-top">Sessions ${iconSmall("check")}</div><strong>${runs.length}</strong><small>${runs.filter((r) => done(r) === 11 * countShots(r)).length} fully photographed</small></div></div><div class="section-head"><h2>Your four bottles</h2><small>Select a bottle to begin</small></div><div class="bottles">${bottles
     .map((b) => {
       const n = photos.filter(
         (p) => runs.find((r) => r.id === p.run)?.bottle === b.id,
       ).length;
-      return `<button class="bottle-card" data-new="${b.id}"><div class="bottle-stage"><span class="bottle-code">${b.id}</span>${bottleSvg(b)}</div><h3>${b.name}</h3><p>${b.detail}</p><div class="progress"><i style="width:${Math.min((n / 440) * 100, 100)}%"></i></div><div class="card-foot"><span>${n} / 440 photos</span><span>Start →</span></div></button>`;
+      const fills = bottleFills(b.id, "train").length,
+        ref = runs.find((r) => r.bottle === b.id)?.reference;
+      return `<button class="bottle-card" data-new="${b.id}"><div class="bottle-stage"><span class="bottle-code">${b.id}</span>${bottleSvg(b)}</div><h3>${b.name}</h3><p>${b.detail}</p><div class="progress"><i style="width:${Math.min((fills / fillGoal.train) * 100, 100)}%"></i></div><div class="card-foot"><span>${fills} / ${fillGoal.train} training fills · ${n} photos</span><span>Start →</span></div>${ref ? coverageStrip(b.id, "train", ref) : ""}</button>`;
     })
     .join(
       "",
@@ -207,26 +229,49 @@ function home() {
           .map(runRow)
           .join("")
       : `<div class="empty">${icon("capture")}<h3>A fresh start.</h3><p>Your first collection session will appear here.</p><button class="btn small secondary" data-new="B04">Create a session</button></div>`
-  }</section><section class="panel soft"><div class="eyebrow">Before the first shutter</div><h3>Three things to get right.</h3><ol class="steps"><li><strong>Keep the label on.</strong> Hidden water levels belong in your dataset too.</li><li><strong>Use the balance.</strong> Record grams, not a guessed volume.</li><li><strong>Keep the whole bottle.</strong> Cap, label and base, all in focus.</li></ol><button class="text-link" data-nav="guide">Read the collection guide →</button></section></div>`;
+  }</section><section class="panel soft"><div class="eyebrow">Before the first shutter</div><h3>Three things to get right.</h3><ol class="steps"><li><strong>Shoot in the creative space.</strong> That is where every test image is taken.</li><li><strong>Weigh every fill.</strong> The balance reading is the label.</li><li><strong>Move around.</strong> New spot, new side of the label, new height, every photo.</li></ol><button class="text-link" data-nav="guide">Read the collection guide →</button></section></div>`;
 }
 function iconSmall(n) {
   return `<span style="width:15px;height:15px;display:inline-flex">${icon(n)}</span>`;
 }
 function runRow(r) {
   const b = bottles.find((b) => b.id === r.bottle);
-  return `<div class="row"><div><strong>${esc(r.session)}${r.archived ? " (archived)" : ""} · ${b.name}</strong><small>${esc(r.instance)} · ${esc(r.split)} · ${done(r)} / ${11 * countShots(r)} photos${foreign(r) ? " · by " + esc(r.uploadedBy) : ""}</small></div><div class="actions"><button class="btn small secondary" data-run="${r.id}">${r.archived ? "View archived attempt" : "Open session"}</button>${!r.archived ? `<button class="btn small" data-resume="${r.id}">Continue photos</button>` : ""}</div></div>`;
+  return `<div class="row"><div><strong>${esc(r.session)}${r.archived ? " (archived)" : ""} · ${b.name}</strong><small>${esc(r.instance)} · ${esc(r.split)} · ${isV2(r) ? `${fillKeys(r).length} fills · ${done(r)} photos` : `${done(r)} / ${11 * countShots(r)} photos`}${foreign(r) ? " · by " + esc(r.uploadedBy) : ""}</small></div><div class="actions"><button class="btn small secondary" data-run="${r.id}">${r.archived ? "View archived attempt" : "Open session"}</button>${!r.archived ? `<button class="btn small" data-resume="${r.id}">Continue photos</button>` : ""}</div></div>`;
 }
 function sessions() {
-  return `${header("Collection sessions.", "Resume where you stopped, or start an independent setup.", `<button class="btn" data-new="B04">${icon("plus")} New session</button>`)}<div class="notice">Plan per bottle: 3 training sessions × 110 photos, 1 validation session × 55, and 1 holdout session × 55. Professor-provided datasets stay separate.</div><section class="panel">${runs.length ? runs.map(runRow).join("") : `<div class="empty"><h2>Your workspace is ready.</h2><p>Create a session and the app will guide every shot.</p><button class="btn" data-new="B04">Start your first session</button></div>`}</section>`;
+  return `${header("Collection sessions.", "Resume where you stopped, or start an independent setup.", `<button class="btn" data-new="B04">${icon("plus")} New session</button>`)}<div class="notice">Goal per bottle: about ${fillGoal.train} training fills × 8 photos, plus ${fillGoal.validation} validation and ${fillGoal.holdout} holdout fills × 4 photos, collected on other days. The professor's datasets stay separate.</div><section class="panel">${runs.length ? runs.map(runRow).join("") : `<div class="empty"><h2>Your workspace is ready.</h2><p>Create a session and the app will guide every shot.</p><button class="btn" data-new="B04">Start your first session</button></div>`}</section>`;
 }
 let selectedBottle = "B04";
 function field(label, name, value = "", help = "", type = "text") {
   return `<label class="field">${label}<input name="${name}" value="${esc(value)}" ${type === "decimal" ? 'inputmode="decimal"' : `type="${type}"`} required>${help ? `<small>${help}</small>` : ""}</label>`;
 }
 function newSession() {
-  return `${header("Set up your session.", "A few careful measurements now keep every photo correctly labelled.")}<form id="sessionForm"><div class="grid2"><section class="panel"><div class="eyebrow">01 · Identify</div><h2>Bottle & environment</h2><hr class="divider"><label class="field">Bottle<select name="bottle">${bottles.map((b) => `<option value="${b.id}" ${selectedBottle === b.id ? "selected" : ""}>${b.id} · ${b.name} · ${b.detail}</option>`).join("")}</select></label><div class="grid2">${field("Physical bottle ID", "instance", "I01", "Use I02 for a replacement bottle.")}${field("Session label", "session", "S" + String(runs.length + 1).padStart(2, "0"), "A new session means a fresh collection setup.")}</div><div class="grid2">${field("Setup / leakage group", "setup", "SET" + String(runs.length + 1).padStart(2, "0"), "Related fills and near-identical setups share this ID.")}<label class="field">Dataset split<select name="split"><option value="train">Training · 10 views / level</option><option value="validation">Internal validation · 5 views / level</option><option value="holdout">Internal holdout · 5 views / level</option></select><small>Do not change a setup between splits.</small></label></div>${field("Background", "background", "", "Example: wooden table, plain cream wall")}${field("Lighting", "lighting", "", "Example: window on left, diffuse daylight")}</section><section class="panel"><div class="eyebrow">02 · Measure</div><h2>Balance readings</h2><hr class="divider">${field("Empty bottle + cap (g)", "tare", "", "Weigh the dry, empty bottle with its original label and cap.", "decimal")}${field("Full-reference water only (g)", "reference", "", "Fill to your normal full reference. Subtract the empty bottle + cap mass. Use the same reference for this bottle in later sessions.", "decimal")}${field("Balance step / resolution (g)", "resolution", "1", "Smallest step your balance displays, e.g. 1 or 0.1.", "decimal")}<div class="notice">Net water mass = filled bottle + cap − empty bottle + cap. Printed millilitres are not your measured mass.</div><label class="check"><input type="checkbox" required>Original label stays on, and I use the same cap for every weighing.</label><label class="check"><input type="checkbox" required>I will photograph every level under this setup, without a scale display, measuring jug or mass label in the image.</label><button class="btn" type="submit">Create session ${icon("arrow")}</button></section></div></form>`;
+  const last = runs.find((r) => r.bottle === selectedBottle && !r.archived),
+    v = last || {};
+  return `${header("Start a collection session.", "One session = one visit with one physical bottle. You weigh many fills inside it.")}<form id="sessionForm"><div class="grid2"><section class="panel"><div class="eyebrow">01 · Bottle</div><h2>Which bottle?</h2><hr class="divider"><label class="field">Bottle type<select name="bottle">${bottles.map((b) => `<option value="${b.id}" ${selectedBottle === b.id ? "selected" : ""}>${b.id} · ${b.name} · ${b.detail}</option>`).join("")}</select></label><div class="grid2">${field("Physical bottle ID", "instance", v.instance || "I01", "Each real bottle gets its own ID. Use I02, I03 for other bottles of the same type.")}${field("Session label", "session", "S" + String(runs.length + 1).padStart(2, "0"), "A new visit, a new label.")}</div><label class="field">Dataset split<select name="split"><option value="train">Training · ~8 photos per fill</option><option value="validation">Internal validation · ~4 photos per fill</option><option value="holdout">Internal holdout · ~4 photos per fill</option></select><small>Collect validation and holdout on a different day from training.</small></label><label class="field">Where<select name="background"><option>Creative space DC 3rd floor</option><option>Other room</option></select><small>The professor's validation, test and live images are all taken in the creative space. Collect there.</small></label><label class="field">Light today<select name="lighting"><option>Daylight</option><option>Overcast daylight</option><option>Ceiling lights (evening)</option><option>Mixed</option></select></label><details><summary class="text-link">Advanced: leakage group</summary>${field("Setup / leakage group", "setup", "S" + String(runs.length + 1).padStart(2, "0"), "Defaults to the session label. Photos with one setup ID always stay in one split.")}</details></section><section class="panel"><div class="eyebrow">02 · Measure once per bottle</div><h2>Balance readings</h2><hr class="divider">${field("Empty bottle + cap (g)", "tare", v.tare ?? "", "Dry, empty, original label and cap on. Filled in from your last session with this bottle.", "decimal")}${field("Full-reference water only (g)", "reference", v.reference ?? "", "Water mass at a normal full fill (not to the brim). Used only to suggest pours and check typos.", "decimal")}${field("Balance step (g)", "resolution", v.resolution ?? "1", "Smallest step the balance shows, e.g. 1 or 0.1.", "decimal")}<div class="notice">Water mass = filled bottle with cap − empty bottle with cap. Always weigh with the same cap.</div><button class="btn" type="submit">Create session ${icon("arrow")}</button></section></div></form>`;
+}
+// Fill in the bottle's measurements from its last session, so they stay identical.
+function prefillSession(e) {
+  const form = $("#sessionForm"),
+    bottle = form.elements.bottle.value;
+  if (e.target.name === "bottle") {
+    const last = runs.find((r) => r.bottle === bottle);
+    form.elements.instance.value = last?.instance || "I01";
+  }
+  const instance = form.elements.instance.value.trim(),
+    last = runs.find((r) => r.bottle === bottle && r.instance === instance);
+  form.elements.tare.value = last?.tare ?? "";
+  form.elements.reference.value = last?.reference ?? "";
+  form.elements.resolution.value = last?.resolution ?? "1";
+}
+function retakeTags() {
+  if (!retake) return null;
+  return photos.find((p) => p.id === retake.id) || null;
 }
 function sessionPage() {
+  return isV2(current) ? v2SessionPage() : legacySessionPage();
+}
+function legacySessionPage() {
   const r = current,
     b = bottles.find((b) => b.id === r.bottle);
   return `${header(`${b.name} · ${esc(r.session)}`, `${esc(r.split)} · ${esc(r.instance)} · ${esc(r.background)}`, `<button class="btn secondary" data-nav="capture">${icon("back")} Sessions</button>`)}<div class="grid2"><section class="panel"><div class="eyebrow">Session progress</div><h2>${done(r)} <span class="muted">/ ${11 * countShots(r)} photos</span></h2><p>${countShots(r)} views at each of 11 fill levels.</p><div class="progress"><i style="width:${(done(r) / (11 * countShots(r))) * 100}%"></i></div>${foreign(r) ? `<p class="tiny">Started by ${esc(r.uploadedBy)}. You can add, retake and delete photos here too.</p>` : ""}<div class="actions">${!r.archived ? `<button class="btn small" data-resume="${r.id}">Continue photos</button><button class="btn small secondary" id="resetSession">Reset session</button>` : '<span class="badge">Archived attempt</span>'}<button class="btn small secondary" data-export="${r.id}">${icon("download")} Export session ZIP</button><button class="btn small danger" id="deleteSession">Delete session</button></div></section><section class="panel soft"><div class="eyebrow">Your measurement reference</div><h2>${grams(r.reference)} g <span class="muted" style="font-size:13px">water at 100%</span></h2><p>Empty bottle + cap: ${grams(r.tare)} g<br>Scale step: ${grams(r.resolution)} g · Setup: ${esc(r.setup)}</p></section></div><div class="section-head"><h2>Choose a fill level</h2><small>Actual grams are recorded next</small></div><div class="levels">${Array.from({ length: 11 }, (_, l) => `<button class="level ${done(r, l) === countShots(r) ? "complete" : ""}" data-level="${l}" ${r.archived ? "disabled" : ""}><strong>${l * 10}%</strong><small>Target ≈ ${grams((r.reference * l) / 10)} g</small><small>${done(r, l)} / ${countShots(r)} photos ${done(r, l) === countShots(r) ? "✓" : ""}</small></button>`).join("")}</div><div class="notice">Targets help you choose fills. The exact balance reading becomes the training label. Let the water settle and wipe the outside dry. If you refill a level after leaving the setup, start a new session instead of reusing its old measurement.</div>`;
@@ -235,6 +280,9 @@ function angleDiagram(s) {
   return `<div class="angle-diagram"><svg viewBox="0 0 300 145" aria-label="Camera framing illustration"><path d="M40 130h220" stroke="#c5d1b8"/><path d="M179 25h15v30l12 14v57h-39V69l12-14z" fill="#d3e0c5" stroke="#7c9870" stroke-width="2"/><path d="M169 91h35v21h-35z" fill="#fafbf7"/><g transform="translate(${s === 0 || s === 4 || s === 5 || s === 9 ? "45 70" : "60 20"}) rotate(${s === 0 || s === 4 || s === 5 || s === 9 ? "0" : "25"})"><rect width="34" height="24" rx="5" fill="#315c46"/><circle cx="18" cy="12" r="6" fill="#e6eed8"/><path d="M42 12h65" stroke="#91a782" stroke-dasharray="4 4"/></g><text x="150" y="143" text-anchor="middle" font-size="9" fill="#6e8268">${shots[s][3]} · whole bottle in frame</text></svg></div>`;
 }
 function shootPage() {
+  return isV2(current) ? v2ShootPage() : legacyShootPage();
+}
+function legacyShootPage() {
   const r = current,
     shot = retake ? retake.shot : nextShot(r, level);
   activeShot = shot ?? 0;
@@ -254,12 +302,249 @@ function photoTiles(list) {
     .reverse()
     .map(
       (p) =>
-        `<article class="photo-tile"><img src="${objectURL(p.blob)}" alt="${esc(p.name)}" loading="lazy"><div class="info"><div class="bar"><strong>${grams(p.mass)} g</strong><span class="badge ${p.synced ? "" : "warn"}">${p.synced ? "On Drive" : "Local"}</span></div><p>${esc(p.name)}</p><p>${esc(p.visibility)} surface · ${p.width} × ${p.height}${p.retakenAt ? " · retaken" : ""}</p><button class="text-link" data-photo="${p.id}">View, retake or download</button></div></article>`,
+        `<article class="photo-tile"><img src="${objectURL(p.blob)}" alt="${esc(p.name)}" loading="lazy"><div class="info"><div class="bar"><strong>${grams(p.mass)} g</strong><span class="badge ${p.synced ? "" : "warn"}">${p.synced ? "On Drive" : "Local"}</span></div><p>${esc(p.name)}</p><p>${p.spot ? esc(p.spot) + " · " + esc(p.facing || "") + " · " : ""}${esc(p.visibility)} surface · ${p.width} × ${p.height}${p.retakenAt ? " · retaken" : ""}</p><button class="text-link" data-photo="${p.id}">View, retake or download</button></div></article>`,
     )
     .join("");
 }
 function guide() {
-  return `${header("The field guide.", "Simple habits that make your dataset useful.")}<div class="grid2"><section class="panel"><div class="eyebrow">The protocol</div><h2>One measured fill. Multiple views.</h2><ol class="steps"><li><strong>Weigh the empty bottle and cap.</strong> This is your tare.</li><li><strong>Establish a full reference.</strong> Measure the water mass at normal full fill. Keep this reference for that physical bottle.</li><li><strong>Use 11 targets.</strong> Empty, 10%, 20% … 100%. Record actual grams, even if the target is not exact.</li><li><strong>Capture every view at every level.</strong> Training uses 10; internal validation and holdout use 5.</li><li><strong>Vary setups between sessions.</strong> Different backgrounds, soft daylight / room lighting, modest distances and camera positions.</li><li><strong>Keep related photos together.</strong> Never randomly split near-duplicate photos across training and evaluation.</li></ol></section><section class="panel soft"><div class="eyebrow">When the surface is hidden</div><h2>Keep the label. Keep the example.</h2><p>Choose “Hidden” in the review screen. Do not remove the label or invent a visible water line.</p><p>A model may learn other image cues, but an opaque label can make different masses look the same. More photos cannot guarantee an exact answer where the image contains no distinguishing evidence.</p><p>Evaluate hidden and visible cases separately. Compare the model against a simple average-mass baseline.</p><div class="notice">The app records measurements and guides photography. It does not measure water from a photo or automatically verify focus, angle or bottle identity.</div></section></div><div class="section-head"><h2>Framing examples</h2><small>Illustrations, not training images</small></div><div class="grid2"><section class="panel"><h3>Kondrauer & Labertaler Mild</h3><img class="guide-img" src="guide-glass.png" alt="Generated framing examples for Kondrauer and Labertaler Mild bottles"></section><section class="panel"><h3>Labertaler Medium & Fachingen</h3><img class="guide-img" src="guide-mixed.png" alt="Generated framing examples for Labertaler Medium and Fachingen bottles"></section></div><p class="tiny">AI-generated examples show composition only. Bottle details and liquid appearance may be imperfect. Never add these illustrations to your dataset.</p><section class="panel"><h3>Your two-week collection plan</h3><div class="grid2"><div><p><strong>Days 1–2:</strong> Measure references. Take a small pilot. Check sharpness, filenames, actual grams and exports on your laptop.</p><p><strong>Days 3–8:</strong> Three training sessions per bottle, with different backgrounds and lighting. Include all 11 levels in each session.</p></div><div><p><strong>Days 9–12:</strong> Collect independent internal validation and holdout sessions. Keep professor-provided data separate.</p><p><strong>Days 13–14:</strong> Audit labels and missing views, export backups, and inspect model errors. Never tune on the final test set.</p></div></div></section>`;
+  return `${header("The field guide.", "Collect photos that look like the professor's test photos.")}<div class="grid2"><section class="panel"><div class="eyebrow">What the validation set shows</div><h2>Test photos are messy on purpose.</h2><ol class="steps"><li><strong>Many places.</strong> Desks, chairs, window sills, shelves, carpet, plants, boxes, all in the creative space on DC 3rd floor.</li><li><strong>Any side of the bottle.</strong> Front label, back label and side views.</li><li><strong>Loose camera angles.</strong> Low, bottle height and from above. Near and far.</li><li><strong>Sometimes held in a hand.</strong> Still upright.</li><li><strong>Random masses.</strong> From about 3 g to over 900 g, not round steps.</li><li><strong>Several bottles of each type.</strong> Caps and wear differ.</li></ol></section><section class="panel soft"><div class="eyebrow">The protocol</div><h2>Weigh once. Shoot everywhere.</h2><ol class="steps"><li><strong>Weigh the empty bottle with its cap</strong> once per physical bottle.</li><li><strong>Tap “Weigh a new fill”.</strong> Pour roughly the suggested amount. Weigh. Enter the reading.</li><li><strong>Take about 8 photos</strong> (4 for validation and holdout). Follow the prompt: a new spot, a new side, a new height.</li><li><strong>Tag each photo.</strong> It takes a few taps. Tags show you later where the model fails.</li><li><strong>Pour some in or out, weigh again.</strong> That is the next fill.</li><li><strong>Spread fills evenly.</strong> The coverage bars show which amounts are missing. The suggestions fill the gaps.</li></ol></section></div><div class="grid2"><section class="panel"><div class="eyebrow">Do</div><h3>Good habits</h3><ol class="steps"><li>Keep the original labels and cap on.</li><li>Whole bottle visible, cap to base, in sharp focus.</li><li>Use the normal 1× lens. No flash, no portrait mode, no filters.</li><li>Let the water settle before each photo.</li><li>Use 2–3 physical bottles per type (I01, I02…).</li><li>Shoot on different days and at different times of day.</li></ol></section><section class="panel"><div class="eyebrow">Don't</div><h3>Shortcuts the model could learn</h3><ol class="steps"><li>No balance, jug, cups or written numbers in the photo.</li><li>Don't always pour in order from empty to full. The suggestions are random for this reason.</li><li>Don't photograph a fill in only one spot.</li><li>Don't delete “behind label” photos. They are in the test set too.</li><li>Never mix photos of one fill into training and evaluation. The app keeps each fill inside its session.</li></ol></section></div><section class="panel"><h3>A realistic plan</h3><div class="grid2"><div><p><strong>Per visit (about 1 hour):</strong> one bottle, 10–15 fills, about 100 photos. Batch import helps: shoot with the phone camera, then import all photos of one fill at once.</p><p><strong>Goal per bottle:</strong> about ${fillGoal.train} training fills, then ${fillGoal.validation} validation and ${fillGoal.holdout} holdout fills on other days.</p></div><div><p><strong>Check early:</strong> after the first visit, train a quick model and score it on the professor's 40 validation photos. Let the errors decide what to collect next.</p><p class="tiny">No number of photos guarantees accuracy. When the water line is behind the label, the photo may not contain enough information.</p></div></div></section>`;
+}
+// ---------- Protocol 2: free fills, many spots, tagged photos ----------
+const isV2 = (r) => r?.protocol === PROTOCOL;
+const fillKeys = (r) =>
+  Object.keys(r.fills || {})
+    .map(Number)
+    .sort((a, b) => a - b);
+function nextFill(r) {
+  const k = fillKeys(r);
+  return k.length ? k[k.length - 1] + 1 : 1;
+}
+// Fills of this bottle in this split across live sessions, for balanced targets.
+function bottleFills(bottle, split) {
+  return runs
+    .filter(
+      (x) =>
+        x.bottle === bottle && !x.archived && (!split || x.split === split),
+    )
+    .flatMap((x) => Object.values(x.fills || {}));
+}
+function coverageStrip(bottle, split, reference) {
+  const c = coverage(bottleFills(bottle, split), reference),
+    max = Math.max(1, ...c);
+  return `<div class="cov" aria-label="Fill coverage from empty to full">${c
+    .map(
+      (n, i) =>
+        `<div class="cov-col" title="${i * 10}–${i * 10 + 10}%: ${n} fills"><i style="height:${Math.max(4, (n / max) * 100)}%" class="${n ? "" : "none"}"></i><small>${n}</small></div>`,
+    )
+    .join(
+      "",
+    )}</div><div class="cov-axis"><span>empty</span><span>half</span><span>full</span></div>`;
+}
+function chips(name, options, value, required = false) {
+  return `<div class="chips" role="radiogroup">${options
+    .map(
+      ([v, t]) =>
+        `<label class="chip"><input type="radio" name="${name}" value="${esc(v)}" ${v === value ? "checked" : ""} ${required ? "required" : ""}><span>${esc(t)}</span></label>`,
+    )
+    .join("")}</div>`;
+}
+const spotOptions = () => spots.map((s) => [s, s]);
+const visibilityOptions = [
+  ["visible", "Visible"],
+  ["partial", "Partly"],
+  ["hidden", "Behind label"],
+  ["uncertain", "Not sure"],
+];
+function fillPhotos(r, l) {
+  return photos
+    .filter((p) => p.run === r.id && p.level === l)
+    .sort((a, b) => a.shot - b.shot);
+}
+function lastSpot(r, l) {
+  const list = fillPhotos(r, l);
+  return list.length ? list[list.length - 1].spot : undefined;
+}
+function v2SessionPage() {
+  const r = current,
+    b = bottles.find((b) => b.id === r.bottle),
+    keys = fillKeys(r),
+    goal = countShots(r);
+  return `${header(`${b.name} · ${esc(r.session)}`, `${esc(r.split)} · ${esc(r.instance)} · ${esc(r.background)} · ${esc(r.lighting)}`, `<button class="btn secondary" data-nav="capture">${icon("back")} Sessions</button>`)}<div class="grid2"><section class="panel"><div class="eyebrow">This session</div><h2>${keys.length} fills <span class="muted">· ${done(r)} photos</span></h2><p>Weigh a fill, take about ${goal} photos in different spots, then weigh the next one.</p>${foreign(r) ? `<p class="tiny">Started by ${esc(r.uploadedBy)}. You can add, retake and delete photos here too.</p>` : ""}<div class="actions">${!r.archived ? `<button class="btn" data-newfill="1">${icon("plus")} Weigh a new fill</button><button class="btn secondary small" id="resetSession">Reset session</button>` : '<span class="badge">Archived attempt</span>'}<button class="btn small secondary" data-export="${r.id}">${icon("download")} Export session ZIP</button><button class="btn small danger" id="deleteSession">Delete session</button></div></section><section class="panel soft"><div class="eyebrow">${b.id} · ${esc(r.split)} fills across all sessions</div><h3>Coverage from empty to full</h3>${coverageStrip(r.bottle, r.split, r.reference)}<p class="tiny">Full reference: ${grams(r.reference)} g water. Empty bottle + cap: ${grams(r.tare)} g. Scale step: ${grams(r.resolution)} g. The app suggests pours for the emptiest bars.</p></section></div><div class="section-head"><h2>Fills in this session</h2><small>Each fill is one balance reading</small></div>${
+    keys.length
+      ? `<div class="levels">${[...keys]
+          .reverse()
+          .map((l) => {
+            const f = r.fills[l],
+              n = done(r, l);
+            return `<button class="level ${n >= goal ? "complete" : ""}" data-fill="${l}" ${r.archived ? "disabled" : ""}><strong>${grams(f.mass)} g</strong><small>F${String(l).padStart(2, "0")} · ${Math.round((f.mass / r.reference) * 100)}% full</small><small>${n} / ${goal} photos ${n >= goal ? "✓" : ""}</small></button>`;
+          })
+          .join("")}</div>`
+      : `<section class="panel empty"><h3>No fills yet.</h3><p>Tap “Weigh a new fill”. The app suggests how much water to pour.</p></section>`
+  }<div class="notice">Tap a fill to add more photos. You only confirm that the water has not changed. If you pour water in or out, that is a new fill.</div>`;
+}
+function v2ShootPage() {
+  const r = current,
+    goal = countShots(r),
+    f = verified ? activeFill() : r.fills?.[level],
+    n = done(r, level),
+    fillName = `F${String(level).padStart(2, "0")}`;
+  // 1. Weigh a new fill, or confirm an existing one.
+  if (!verified) {
+    if (!f && pendingTarget === null)
+      pendingTarget = suggestTarget(
+        r.reference,
+        bottleFills(r.bottle, r.split),
+      );
+    const sameBlock = f
+      ? `<div class="notice">This fill was weighed at <strong>${grams(f.mass)} g</strong> water (${grams(f.gross)} g on the balance). If you have not poured anything in or out, continue straight away.</div><label class="check"><input type="checkbox" id="sameWaterOk">I have not added or removed water since then.</label><button class="btn" type="button" id="sameWater" disabled>Continue with ${grams(f.mass)} g ${icon("arrow")}</button><hr class="divider"><h3>Not sure? Weigh again</h3>`
+      : "";
+    return `${header(
+      retake
+        ? `Retake · ${fillName} · photo ${retake.shot + 1}`
+        : f
+          ? `${fillName} · ${grams(f.mass)} g`
+          : `New fill · pour about ${grams(pendingTarget)} g`,
+      f
+        ? "Confirm the water is unchanged, then keep shooting."
+        : `About ${Math.round((pendingTarget / r.reference) * 100)}% of the full reference. Hitting it exactly does not matter. The balance reading is the label.`,
+    )}<div class="grid2"><section class="panel">${sameBlock}<p>${f ? "The reading must match within one scale step." : "Pour water, put the same cap on, dry the outside, then weigh. Enter exactly what the balance shows."}</p><form id="massForm">${field("Filled bottle + cap (g)", "gross", "", "Empty bottle + cap: " + grams(r.tare) + " g", "decimal")}<div id="massPreview" class="notice">Your net water mass will appear here.</div><button class="btn" type="submit" id="massSubmit">Confirm & start photos ${icon("arrow")}</button></form>${!f ? '<button class="text-link" id="newTarget">Suggest a different amount</button>' : ""}<br><button class="text-link" id="backSession">${retake ? "← Cancel retake" : "← Back to session"}</button></section><section class="panel soft"><h3>Why random amounts?</h3><p>The professor's test masses are spread out: 3 g, 36 g, 137 g, 467 g and so on. Random pours teach the model the whole range, not eleven fixed steps.</p><h3>Coverage so far</h3>${coverageStrip(r.bottle, r.split, r.reference)}</section></div>`;
+  }
+  // 2. Enough photos of this fill: offer the next step.
+  if (!retake && n >= goal && !extraShots)
+    return `${header(`${fillName} done · ${grams(f.mass)} g`, `${n} photos saved. Now change the water and weigh the next fill.`)}<section class="panel"><div class="actions"><button class="btn" data-newfill="1">${icon("plus")} Weigh the next fill</button><button class="btn secondary" id="moreShots">Take more of this fill</button><button class="btn ghost" id="backSession">Back to session</button></div><p class="tiny">${photos.filter((p) => p.run === r.id && p.level === level && !p.synced).length} photos of this fill still need a Drive upload or local export.</p></section>`;
+  // 3. Shoot.
+  const shot = retake ? retake.shot : nextShot(r, level);
+  activeShot = shot;
+  const pl = planFor(level, shot),
+    used = [
+      ...new Set(
+        fillPhotos(r, level)
+          .map((p) => p.spot)
+          .filter(Boolean),
+      ),
+    ];
+  return `${header(`${retake ? "Retake · " : ""}${fillName} · photo ${shot + 1}${retake ? "" : ` of ~${goal}`}`, `Water: ${grams(f.mass)} g · The model only sees the photo.`, `<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">${esc(pl.text)}</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn" style="width:100%;margin:12px 0 6px;cursor:pointer">${icon("capture")} Take photo with phone camera<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label>${retake ? "" : `<label class="btn secondary" style="width:100%;margin:0 0 12px;cursor:pointer">${icon("dataset")} Import several photos of this fill<input id="fileBatch" type="file" accept="image/*" multiple hidden></label>`}<div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">Next shot</div><h2 class="instruction">${esc(pl.text)}</h2><ol class="steps"><li>Bottle upright, original label on, cap on.</li><li>Whole bottle in the frame, cap to base. A busy background is fine.</li><li>No balance, jug, cups or written numbers in view.</li><li>Tap to focus on the bottle. Normal 1× lens. No flash, no portrait mode.</li></ol><p class="tiny">Spots used for this fill: ${used.length ? used.map(esc).join(", ") : "none yet"}. Aim for at least four different spots per fill.</p><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div></section></div>`;
+}
+function tagForm(pl, spot, batch) {
+  const mixed = batch ? [["mixed", "Mixed"]] : [];
+  return `<label class="field">Where is the bottle?${chips("spot", spotOptions(), spot, true)}</label><label class="field">Which side faces the camera?${chips("facing", [...mixed, ...tagOptions.facing], batch ? "mixed" : pl.facing, true)}</label><label class="field">Camera height${chips("camHeight", [...mixed, ...tagOptions.camHeight], batch ? "mixed" : pl.camHeight, true)}</label><label class="field">Distance${chips("distance", [...mixed, ...tagOptions.distance], batch ? "mixed" : pl.distance, true)}</label><label class="field">Water surface${chips("visibility", visibilityOptions, batch ? "uncertain" : "", true)}<small>Look at the photo. “Behind label” examples stay in the dataset.</small></label>`;
+}
+function readTags(form) {
+  const d = new FormData(form),
+    t = {
+      spot: d.get("spot"),
+      facing: d.get("facing"),
+      camHeight: d.get("camHeight"),
+      distance: d.get("distance"),
+      visibility: d.get("visibility"),
+    };
+  if (!t.spot) throw Error("Choose where the bottle is.");
+  if (!["visible", "partial", "hidden", "uncertain"].includes(t.visibility))
+    throw Error("Choose the water surface visibility.");
+  return t;
+}
+async function decodePhoto(file) {
+  if (file.size > 60 * 1024 * 1024)
+    throw Error("Choose photos smaller than 60 MB.");
+  const img = new Image(),
+    u = objectURL(file);
+  img.src = u;
+  try {
+    await img.decode();
+  } catch {
+    throw Error(
+      "A photo could not be decoded. On iPhone choose Camera → Formats → Most Compatible, or select JPEGs.",
+    );
+  }
+  let blob = file;
+  if (file.type !== "image/jpeg") {
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    c.getContext("2d").drawImage(img, 0, 0);
+    blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.97));
+    if (!blob) throw Error("Could not convert a photo to JPEG.");
+  }
+  return {
+    blob,
+    width: img.naturalWidth,
+    height: img.naturalHeight,
+    takenAt: file.lastModified
+      ? new Date(file.lastModified).toISOString()
+      : new Date().toISOString(),
+  };
+}
+async function prepareBatch(files) {
+  stopCamera();
+  const list = [];
+  for (const [i, file] of files.entries()) {
+    $("#review").innerHTML =
+      `<section class="panel"><p>Reading photo ${i + 1} of ${files.length}…</p></section>`;
+    list.push(await decodePhoto(file));
+  }
+  batch = { run: current.id, level, list };
+  const pl = planFor(level, nextShot(current, level));
+  $("#review").innerHTML =
+    `<section class="panel"><div class="eyebrow">Review ${list.length} photos</div><h3>${grams(activeFill().mass)} g each · ${fillLabel()}</h3><div class="batch-grid">${list.map((c) => `<img src="${objectURL(c.blob)}" alt="Imported bottle photo">`).join("")}</div>${list.some((c) => Math.min(c.width, c.height) < 1000) ? '<div class="notice warn">Some photos have low resolution.</div>' : ""}<div class="notice warn">Import only photos of this exact fill. Imported photos share the tags you choose here.</div><form id="batchForm">${tagForm(pl, "", true)}<div class="actions"><button class="btn" type="submit" id="saveBatch">Save ${list.length} photos ${icon("arrow")}</button><button class="btn secondary" type="button" id="cancelBatch">Cancel</button></div></form></section>`;
+  on("#batchForm", "submit", saveBatch);
+  $("#cancelBatch").onclick = () => {
+    batch = null;
+    render();
+  };
+  $("#review").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+const fillLabel = () => `F${String(level).padStart(2, "0")}`;
+async function saveBatch(e) {
+  e.preventDefault();
+  if (!batch) throw Error("Choose photos first.");
+  const button = $("#saveBatch");
+  button.disabled = true;
+  try {
+    if (batch.run !== current.id || batch.level !== level || !verified)
+      throw Error("Reconfirm the fill before saving.");
+    const t = readTags(e.target),
+      f = activeFill();
+    let saved = 0;
+    const used = new Set(
+      photos
+        .filter((p) => p.run === current.id && p.level === level)
+        .map((p) => p.shot),
+    );
+    for (const c of batch.list) {
+      let shot = 0;
+      while (used.has(shot)) shot++;
+      used.add(shot);
+      await addPhoto({
+        id: `${current.id}:${level}:${shot}`,
+        run: current.id,
+        level,
+        shot,
+        name: photoName(current, level, shot),
+        path: photoPath(current, level, shot),
+        mass: f.mass,
+        gross: f.gross,
+        target: f.target,
+        ...t,
+        blob: c.blob,
+        width: c.width,
+        height: c.height,
+        takenAt: c.takenAt,
+        imported: true,
+        synced: false,
+      });
+      saved++;
+    }
+    batch = null;
+    await refresh();
+    render();
+    window.scrollTo(0, 0);
+    toast(`Saved ${saved} photos locally.`);
+    if (drive.connected() && navigator.onLine) syncNow().catch(fail);
+  } catch (e) {
+    if (button.isConnected) button.disabled = false;
+    await refresh();
+    throw e;
+  }
 }
 let settingsCache = {};
 function settings() {
@@ -279,6 +564,19 @@ function resumeSession(id) {
   if (!current || current.archived) return;
   retake = null;
   retakeFill = null;
+  extraShots = false;
+  if (isV2(current)) {
+    const keys = fillKeys(current),
+      last = keys[keys.length - 1];
+    if (last !== undefined && done(current, last) < countShots(current))
+      level = last;
+    else {
+      level = nextFill(current);
+      pendingTarget = null;
+    }
+    nav("shoot");
+    return;
+  }
   const next = Array.from({ length: 11 }, (_, n) => n).find(
     (n) => nextShot(current, n) !== undefined,
   );
@@ -394,6 +692,54 @@ function bind() {
       level = Number(b.dataset.level);
       nav("shoot");
     };
+  for (const b of $$("[data-newfill]"))
+    b.onclick = () => {
+      retake = null;
+      retakeFill = null;
+      extraShots = false;
+      pendingTarget = null;
+      level = nextFill(current);
+      nav("shoot");
+    };
+  for (const b of $$("[data-fill]"))
+    b.onclick = () => {
+      retake = null;
+      retakeFill = null;
+      extraShots = false;
+      level = Number(b.dataset.fill);
+      nav("shoot");
+    };
+  on("#moreShots", "click", () => {
+    extraShots = true;
+    render();
+  });
+  on("#newTarget", "click", () => {
+    pendingTarget = null;
+    render();
+  });
+  on("#fileBatch", "click", () => {
+    filePickerOpen = true;
+  });
+  on("#fileBatch", "cancel", () => {
+    filePickerOpen = false;
+  });
+  on("#fileBatch", "change", async (e) => {
+    filePickerOpen = false;
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (files.length) await prepareBatch(files);
+  });
+  for (const el of $$(
+    "#sessionForm [name=bottle], #sessionForm [name=instance]",
+  ))
+    el.addEventListener("change", prefillSession);
+  on("#sessionForm [name=session]", "input", (e) => {
+    const s = $("#sessionForm [name=setup]");
+    if (s && !s.dataset.touched) s.value = e.target.value;
+  });
+  on("#sessionForm [name=setup]", "input", (e) => {
+    e.target.dataset.touched = "1";
+  });
   for (const b of $$("[data-export]"))
     b.onclick = () => exportZip(b.dataset.export).catch(fail);
   bindPhotos();
@@ -408,13 +754,14 @@ function bind() {
         session: f.get("session").trim(),
         setup: f.get("setup").trim(),
         split: f.get("split"),
-        background: f.get("background").trim(),
-        lighting: f.get("lighting").trim(),
+        background: String(f.get("background") || "").trim(),
+        lighting: String(f.get("lighting") || "").trim(),
         tare: mass(f.get("tare")),
         reference: mass(f.get("reference")),
         resolution: mass(f.get("resolution")),
         created: new Date().toISOString(),
         fills: {},
+        protocol: PROTOCOL,
       };
     await refresh();
     checkRun(r, runs);
@@ -422,7 +769,7 @@ function bind() {
     await refresh();
     current = r;
     nav("session");
-    toast("Session created. Choose your first fill level.");
+    toast("Session created. Weigh your first fill.");
   });
   on("#massForm input[name=gross]", "input", (e) => {
     try {
@@ -446,7 +793,9 @@ function bind() {
     if (f && Math.abs(gross - f.gross) > current.resolution) {
       if (!retake)
         throw Error(
-          "This reading does not match the saved fill. Start a new session if the amount of water changed.",
+          isV2(current)
+            ? "This reading does not match the saved fill. If the water changed, go back and tap “Weigh a new fill”."
+            : "This reading does not match the saved fill. Start a new session if the amount of water changed.",
         );
       if (refillPending !== gross) {
         refillPending = gross;
@@ -469,8 +818,15 @@ function bind() {
         gross,
         mass: n,
         measuredAt: new Date().toISOString(),
+        ...(isV2(current) && pendingTarget !== null
+          ? { target: pendingTarget }
+          : {}),
       };
+      pendingTarget = null;
       await put("runs", current);
+      // Keep the session list current, so Continue photos finds this fill.
+      await refresh();
+      current = runs.find((x) => x.id === current.id) || current;
     }
     verified = true;
     render();
@@ -481,7 +837,8 @@ function bind() {
     (e) => ($("#sameWater").disabled = !e.target.checked),
   );
   on("#sameWater", "click", () => {
-    if (!retake || !$("#sameWaterOk").checked) return;
+    if (!$("#sameWaterOk").checked) return;
+    if (!retake && !current.fills?.[level]) return;
     retakeFill = null;
     verified = true;
     render();
@@ -605,7 +962,7 @@ function bindPhotos() {
       const p = photos.find((p) => p.id === b.dataset.photo),
         r = runs.find((r) => r.id === p.run),
         d = $("#modal");
-      d.innerHTML = `<h2>${grams(p.mass)} g water</h2><img src="${objectURL(p.blob)}" style="width:100%;max-height:50vh;object-fit:contain" alt="${esc(p.name)}"><p class="filename">${esc(p.path)}</p><p>${esc(r.background)} · ${esc(r.lighting)}<br>Surface: ${esc(p.visibility)} · ${p.width} × ${p.height}</p><div class="actions">${r.archived ? "" : '<button class="btn" id="retakePhoto">Retake this photo</button>'}<button class="btn secondary" id="downloadPhoto">Download JPEG</button><button class="btn ghost" id="closeModal">Close</button></div>${r.archived ? '<p class="tiny">Archived attempts are read-only.</p>' : '<p class="tiny">Retake replaces this photo locally and on Google Drive after you save the new one. Until then, nothing is deleted.</p>'}`;
+      d.innerHTML = `<h2>${grams(p.mass)} g water</h2><img src="${objectURL(p.blob)}" style="width:100%;max-height:50vh;object-fit:contain" alt="${esc(p.name)}"><p class="filename">${esc(p.path)}</p><p>${esc(r.background)} · ${esc(r.lighting)}${p.spot ? `<br>${esc(p.spot)} · ${esc(p.facing || "")} · ${esc(p.camHeight || "")} · ${esc(p.distance || "")}` : ""}<br>Surface: ${esc(p.visibility)} · ${p.width} × ${p.height}</p><div class="actions">${r.archived ? "" : '<button class="btn" id="retakePhoto">Retake this photo</button>'}<button class="btn secondary" id="downloadPhoto">Download JPEG</button><button class="btn ghost" id="closeModal">Close</button></div>${r.archived ? '<p class="tiny">Archived attempts are read-only.</p>' : '<p class="tiny">Retake replaces this photo locally and on Google Drive after you save the new one. Until then, nothing is deleted.</p>'}`;
       d.showModal();
       $("#closeModal").onclick = () => d.close();
       if ($("#retakePhoto"))
@@ -774,8 +1131,9 @@ async function prepareCandidate(file) {
     `<img src="${objectURL(blob)}" alt="Review your captured bottle photo"><span class="cam-label">REVIEW · ${candidate.width} × ${candidate.height}</span>`;
   $("#cameraControls").innerHTML = "";
   $("#review").innerHTML =
-    `<section class="panel"><div class="eyebrow">Review before saving</div><h3>${grams(activeFill().mass)} g · View ${shots[activeShot][0]}</h3>${Math.min(candidate.width, candidate.height) < 1000 ? '<div class="notice warn">Low image resolution. Consider retaking with iPhone Camera.</div>' : ""}<form id="reviewForm"><label class="field" style="margin-top:16px">Water surface visibility<select name="visibility" required><option value="">Choose after inspecting the photo</option><option value="visible">Visible</option><option value="partial">Partly visible</option><option value="hidden">Hidden behind label / bottle</option><option value="uncertain">Uncertain</option></select></label><div class="actions"><button class="btn" type="submit" id="savePhoto">${retake ? "Save retake" : "Save & Next"} ${icon("arrow")}</button><button class="btn secondary" type="button" id="retake">Retake</button></div></form><p class="tiny">Saved locally first. ${drive.connected() ? (retake ? "Then the old Drive copy moves to Trash and the new photo uploads." : "Then automatically queued to Google Drive.") : "Connect Drive later or export this session to keep a backup."}</p></section>`;
+    `<section class="panel"><div class="eyebrow">Review before saving</div><h3>${grams(activeFill().mass)} g · ${isV2(current) ? `${fillLabel()} · photo ${activeShot + 1}` : `View ${shots[activeShot][0]}`}</h3>${Math.min(candidate.width, candidate.height) < 1000 ? '<div class="notice warn">Low image resolution. Consider retaking with iPhone Camera.</div>' : ""}<form id="reviewForm">${isV2(current) ? tagForm(planFor(level, activeShot), retakeTags()?.spot ?? (planFor(level, activeShot).spot || (planFor(level, activeShot).same ? lastSpot(current, level) : "")), false) : `<label class="field" style="margin-top:16px">Water surface visibility<select name="visibility" required><option value="">Choose after inspecting the photo</option><option value="visible">Visible</option><option value="partial">Partly visible</option><option value="hidden">Hidden behind label / bottle</option><option value="uncertain">Uncertain</option></select></label>`}<div class="actions"><button class="btn" type="submit" id="savePhoto">${retake ? "Save retake" : "Save & Next"} ${icon("arrow")}</button><button class="btn secondary" type="button" id="retake">Retake</button></div></form><p class="tiny">Saved locally first. ${drive.connected() ? (retake ? "Then the old Drive copy moves to Trash and the new photo uploads." : "Then automatically queued to Google Drive.") : "Connect Drive later or export this session to keep a backup."}</p></section>`;
   on("#reviewForm", "submit", savePhoto);
+  $("#review").scrollIntoView({ behavior: "smooth", block: "start" });
   $("#retake").onclick = () => {
     candidate = null;
     render();
@@ -792,7 +1150,10 @@ async function savePhoto(e) {
       throw Error("Reconfirm the fill before saving.");
     if (retake && (retake.run !== c.run || retake.shot !== c.shot))
       throw Error("Retake details changed. Open the photo again from Dataset.");
-    const visibility = new FormData(e.target).get("visibility");
+    const tags = isV2(current)
+        ? readTags(e.target)
+        : { visibility: new FormData(e.target).get("visibility") },
+      visibility = tags.visibility;
     if (!["visible", "partial", "hidden", "uncertain"].includes(visibility))
       throw Error("Choose the surface visibility.");
     const f = activeFill(),
@@ -805,7 +1166,7 @@ async function savePhoto(e) {
         path: photoPath(current, level, c.shot),
         mass: f.mass,
         gross: f.gross,
-        visibility,
+        ...(isV2(current) ? { target: f.target, ...tags } : { visibility }),
         blob: c.blob,
         width: c.width,
         height: c.height,
@@ -1046,6 +1407,7 @@ document.addEventListener("visibilitychange", () => {
     if (page === "shoot" && verified && !filePickerOpen) {
       verified = false;
       candidate = null;
+      batch = null;
       render();
     }
   }
@@ -1057,7 +1419,7 @@ window.addEventListener("online", () =>
   toast("Connection restored. Use Sync now to upload pending photos."),
 );
 window.addEventListener("beforeunload", (e) => {
-  if (candidate) {
+  if (candidate || batch) {
     e.preventDefault();
     e.returnValue = "";
   }
