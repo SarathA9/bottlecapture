@@ -19,6 +19,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      # Give every module URL the commit ID, so phones never run a stale cached copy.
+      - name: Stamp version
+        run: |
+          v=${GITHUB_SHA::7}
+          sed -i -E "s#(from \"\./[a-z]+\.js)\"#\1?v=$v\"#g" dist/*.js
+          sed -i -E "s#(src=\"app\.js)\"#\1?v=$v\"#; s#(href=\"style\.css)\"#\1?v=$v\"#" dist/index.html
+          sed -i "s#__BUILD__#$v#" dist/app.js
+          grep -c "?v=$v" dist/app.js dist/drive.js dist/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

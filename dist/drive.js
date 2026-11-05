@@ -273,6 +273,36 @@ async function resolveRoot(onStatus) {
   await setting("driveRoot", best);
   return best;
 }
+// People who can open the dataset folder.
+export async function collaborators() {
+  const id = await setting("folder:root");
+  if (!id || !connected()) return [];
+  const r = await api(
+    "/files/" +
+      id +
+      "/permissions?fields=" +
+      encodeURIComponent("permissions(id,type,role,emailAddress,displayName)"),
+  ).catch(() => ({ permissions: [] }));
+  return (r.permissions || []).filter((x) => x.type === "user");
+}
+// Share the dataset folder with a partner as Editor. Google emails them a link.
+export async function invite(email) {
+  const id = await setting("folder:root");
+  if (!id)
+    throw Error("Sync once first, so the dataset folder exists on Drive.");
+  return api(
+    "/files/" + id + "/permissions?sendNotificationEmail=true&fields=id",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "user",
+        role: "writer",
+        emailAddress: email,
+      }),
+    },
+  );
+}
 export async function rootInfo() {
   const id = await setting("folder:root");
   if (!id || !connected()) return null;
@@ -280,7 +310,7 @@ export async function rootInfo() {
     return await api(
       "/files/" +
         id +
-        "?fields=id,name,owners(emailAddress),capabilities(canAddChildren)",
+        "?fields=id,name,ownedByMe,owners(emailAddress),capabilities(canAddChildren,canShare)",
     );
   } catch {
     return null;
