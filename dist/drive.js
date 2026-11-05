@@ -303,6 +303,16 @@ export async function invite(email) {
     },
   );
 }
+// Take away someone's access to the dataset folder (owner only).
+export async function uninvite(permissionId) {
+  const id = await setting("folder:root");
+  return api(
+    "/files/" + id + "/permissions/" + encodeURIComponent(permissionId),
+    {
+      method: "DELETE",
+    },
+  );
+}
 export async function rootInfo() {
   const id = await setting("folder:root");
   if (!id || !connected()) return null;
