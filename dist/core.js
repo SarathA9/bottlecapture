@@ -182,6 +182,98 @@ export const plan = [
   },
 ];
 export const planFor = (fill, photo) => plan[(photo + fill * 3) % plan.length];
+// ---------- Random reference shots ----------
+// The spots drawn in the reference picture. Values match the spot tags above.
+export const refSpots = [
+  "Table",
+  "Floor / carpet",
+  "Shelf",
+  "Window sill",
+  "Chair",
+  "In hand",
+];
+export const comboKey = (c) =>
+  [c.facing, c.camHeight, c.distance, c.spot].join("|");
+// Every combination of label side × camera height × distance × spot (162).
+export const allCombos = () =>
+  tagOptions.facing.flatMap(([facing]) =>
+    tagOptions.camHeight.flatMap(([camHeight]) =>
+      tagOptions.distance.flatMap(([distance]) =>
+        refSpots.map((spot) => ({ facing, camHeight, distance, spot })),
+      ),
+    ),
+  );
+// Small seeded random generator, so the same shot keeps the same picture
+// across re-renders and reloads, until a photo is saved or you ask for another.
+export function seededRandom(text) {
+  let h = 1779033703 ^ text.length;
+  for (let i = 0; i < text.length; i++) {
+    h = Math.imul(h ^ text.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  let a = h >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const optionLabel = (kind, v) =>
+  tagOptions[kind].find(([x]) => x === v)?.[1] || v;
+export function shotWords(c) {
+  return [
+    c.spot,
+    optionLabel("facing", c.facing),
+    optionLabel("camHeight", c.camHeight),
+    `${optionLabel("distance", c.distance)} distance`,
+  ].join(" · ");
+}
+export function shotText(c) {
+  const where =
+    c.spot === "In hand"
+      ? "Hold the bottle upright in your hand and keep the water still."
+      : c.spot === "Floor / carpet"
+        ? "Put the bottle on the floor or carpet."
+        : `Put the bottle on the ${c.spot.toLowerCase()}.`;
+  const side = {
+    front: "Turn the front label to the camera.",
+    side: "Turn it so the label is at the edge and you see the side.",
+    back: "Turn the back label to the camera.",
+  }[c.facing];
+  const height = {
+    low: "Phone low, near the surface, looking slightly up.",
+    eye: "Phone at bottle height.",
+    high: "Phone above the bottle, looking down.",
+  }[c.camHeight];
+  const dist = {
+    near: "Close: the bottle fills most of the frame height.",
+    mid: "Medium: the bottle fills about two thirds of the frame.",
+    far: "Far: the bottle fills about a third of the frame.",
+  }[c.distance];
+  return `${where} ${side} ${height} ${dist}`;
+}
+// Pick a random combination for the next photo.
+// Never repeats a combination already used in this fill. Avoids combinations
+// used in recent fills of the same bottle, and moves to a new spot until the
+// fill has four different spots. Falls back step by step if nothing is left.
+export function pickShot({ seed, inFill = [], recent = [] }) {
+  const rand = seededRandom(seed),
+    all = allCombos(),
+    used = new Set(inFill.map(comboKey)),
+    old = new Set(recent.map(comboKey)),
+    spotsUsed = new Set(inFill.map((c) => c.spot)),
+    free = all.filter((c) => !used.has(comboKey(c))),
+    pool = free.length ? free : all,
+    fresh = pool.filter((c) => !old.has(comboKey(c))),
+    base = fresh.length ? fresh : pool,
+    newSpot =
+      spotsUsed.size < 4 ? base.filter((c) => !spotsUsed.has(c.spot)) : [],
+    tier = newSpot.length ? newSpot : base,
+    c = tier[Math.floor(rand() * tier.length)];
+  return { ...c, text: shotText(c), words: shotWords(c) };
+}
 // Ten equal bins from empty to the full reference, for coverage.
 export const BINS = 10;
 export function binOf(massG, reference) {

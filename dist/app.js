@@ -16,6 +16,9 @@ import {
   spots,
   tagOptions,
   planFor,
+  pickShot,
+  shotText,
+  shotWords,
   coverage,
   suggestTarget,
   fillGoal,
@@ -33,6 +36,7 @@ import {
   remove,
 } from "./db.js";
 import { zip } from "./zip.js";
+import { referenceSvg } from "./refshot.js";
 import * as drive from "./drive.js";
 let runs = [],
   photos = [],
@@ -432,7 +436,7 @@ function v2ShootPage() {
   // 3. Shoot.
   const shot = retake ? retake.shot : nextShot(r, level);
   activeShot = shot;
-  const pl = planFor(level, shot),
+  const pl = shotPlan(r, level, shot),
     used = [
       ...new Set(
         fillPhotos(r, level)
@@ -440,7 +444,41 @@ function v2ShootPage() {
           .filter(Boolean),
       ),
     ];
-  return `${header(`${retake ? "Retake · " : ""}${fillName} · photo ${shot + 1}${retake ? "" : ` of ~${goal}`}`, `Water: ${grams(f.mass)} g · The model only sees the photo.`, `${retake ? "" : '<button class="btn ghost small" id="correctFill">Correct weight</button>'}<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">${esc(pl.text)}</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn" style="width:100%;margin:12px 0 6px;cursor:pointer">${icon("capture")} Take photo with phone camera<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label>${retake ? "" : `<label class="btn secondary" style="width:100%;margin:0 0 12px;cursor:pointer">${icon("dataset")} Import several photos of this fill<input id="fileBatch" type="file" accept="image/*" multiple hidden></label>`}<div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">Next shot</div><h2 class="instruction">${esc(pl.text)}</h2><ol class="steps"><li>Bottle upright, original label on, cap on.</li><li>Whole bottle in the frame, cap to base. A busy background is fine.</li><li>No balance, jug, cups or written numbers in view.</li><li>Tap to focus on the bottle. Normal 1× lens. No flash, no portrait mode.</li></ol><p class="tiny">Spots used for this fill: ${used.length ? used.map(esc).join(", ") : "none yet"}. Aim for at least four different spots per fill.</p><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div></section></div>`;
+  return `${header(`${retake ? "Retake · " : ""}${fillName} · photo ${shot + 1}${retake ? "" : ` of ~${goal}`}`, `Water: ${grams(f.mass)} g · The model only sees the photo.`, `${retake ? "" : '<button class="btn ghost small" id="correctFill">Correct weight</button>'}<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">${esc(pl.text)}</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn" style="width:100%;margin:12px 0 6px;cursor:pointer">${icon("capture")} Take photo with phone camera<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label>${retake ? "" : `<label class="btn secondary" style="width:100%;margin:0 0 12px;cursor:pointer">${icon("dataset")} Import several photos of this fill<input id="fileBatch" type="file" accept="image/*" multiple hidden></label>`}<div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">Next shot</div><figure class="ref-shot">${referenceSvg(pl, pl.words)}<figcaption>${esc(pl.words)}</figcaption></figure><h2 class="instruction">${esc(pl.text)}</h2>${retake ? "" : '<button class="text-link" id="otherShot">Can’t do this one? Show a different shot</button>'}<ol class="steps"><li>Bottle upright, original label on, cap on.</li><li>Whole bottle in the frame, cap to base. A busy background is fine.</li><li>No balance, jug, cups or written numbers in view.</li><li>Tap to focus on the bottle. Normal 1× lens. No flash, no portrait mode.</li></ol><p class="tiny">Spots used for this fill: ${used.length ? used.map(esc).join(", ") : "none yet"}. Aim for at least four different spots per fill.</p><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div></section></div>`;
+}
+// The reference shot for one photo: a random combination of spot, label side,
+// camera height and distance. Never repeats inside the fill, avoids the bottle's
+// recent fills. Stays the same until a photo is saved or "Show a different shot".
+// A retake shows how the original photo was tagged.
+const shotSkip = {};
+const tagsOf = (p) =>
+  p?.spot && p.facing && p.camHeight && p.distance
+    ? {
+        spot: p.spot,
+        facing: p.facing,
+        camHeight: p.camHeight,
+        distance: p.distance,
+      }
+    : null;
+function shotPlan(r, l, shot) {
+  const own = retake ? tagsOf(retakeTags()) : null;
+  if (own) return { ...own, text: shotText(own), words: shotWords(own) };
+  const inFill = fillPhotos(r, l)
+      .filter((p) => p.shot !== shot)
+      .map(tagsOf)
+      .filter(Boolean),
+    recent = photos
+      .filter(
+        (p) =>
+          !(p.run === r.id && p.level === l) &&
+          runs.find((x) => x.id === p.run)?.bottle === r.bottle,
+      )
+      .sort((a, b) => (b.takenAt || "").localeCompare(a.takenAt || ""))
+      .slice(0, 40)
+      .map(tagsOf)
+      .filter(Boolean),
+    key = `${r.id}:${l}:${shot}`;
+  return pickShot({ seed: `${key}:${shotSkip[key] || 0}`, inFill, recent });
 }
 function tagForm(pl, spot, batch) {
   const mixed = batch ? [["mixed", "Mixed"]] : [];
@@ -875,6 +913,11 @@ function bind() {
     render();
   });
   on("#correctFill", "click", openCorrect);
+  on("#otherShot", "click", () => {
+    const key = `${current.id}:${level}:${activeShot}`;
+    shotSkip[key] = (shotSkip[key] || 0) + 1;
+    render();
+  });
   on("#startCamera", "click", startCamera);
   on("#fileCamera", "click", () => {
     filePickerOpen = true;
@@ -1163,7 +1206,7 @@ async function prepareCandidate(file) {
     `<img src="${objectURL(blob)}" alt="Review your captured bottle photo"><span class="cam-label">REVIEW · ${candidate.width} × ${candidate.height}</span>`;
   $("#cameraControls").innerHTML = "";
   $("#review").innerHTML =
-    `<section class="panel"><div class="eyebrow">Review before saving</div><h3>${grams(activeFill().mass)} g · ${isV2(current) ? `${fillLabel()} · photo ${activeShot + 1}` : `View ${shots[activeShot][0]}`}</h3>${Math.min(candidate.width, candidate.height) < 1000 ? '<div class="notice warn">Low image resolution. Consider retaking with iPhone Camera.</div>' : ""}<form id="reviewForm">${isV2(current) ? tagForm(planFor(level, activeShot), retakeTags()?.spot ?? (planFor(level, activeShot).spot || (planFor(level, activeShot).same ? lastSpot(current, level) : "")), false) : `<label class="field" style="margin-top:16px">Water surface visibility<select name="visibility" required><option value="">Choose after inspecting the photo</option><option value="visible">Visible</option><option value="partial">Partly visible</option><option value="hidden">Hidden behind label / bottle</option><option value="uncertain">Uncertain</option></select></label>`}<div class="actions"><button class="btn" type="submit" id="savePhoto">${retake ? "Save retake" : "Save & Next"} ${icon("arrow")}</button><button class="btn secondary" type="button" id="retake">Retake</button></div></form><p class="tiny">Saved locally first. ${drive.connected() ? (retake ? "Then the old Drive copy moves to Trash and the new photo uploads." : "Then automatically queued to Google Drive.") : "Connect Drive later or export this session to keep a backup."}</p></section>`;
+    `<section class="panel"><div class="eyebrow">Review before saving</div><h3>${grams(activeFill().mass)} g · ${isV2(current) ? `${fillLabel()} · photo ${activeShot + 1}` : `View ${shots[activeShot][0]}`}</h3>${Math.min(candidate.width, candidate.height) < 1000 ? '<div class="notice warn">Low image resolution. Consider retaking with iPhone Camera.</div>' : ""}<form id="reviewForm">${isV2(current) ? tagForm(shotPlan(current, level, activeShot), retakeTags()?.spot ?? shotPlan(current, level, activeShot).spot, false) : `<label class="field" style="margin-top:16px">Water surface visibility<select name="visibility" required><option value="">Choose after inspecting the photo</option><option value="visible">Visible</option><option value="partial">Partly visible</option><option value="hidden">Hidden behind label / bottle</option><option value="uncertain">Uncertain</option></select></label>`}<div class="actions"><button class="btn" type="submit" id="savePhoto">${retake ? "Save retake" : "Save & Next"} ${icon("arrow")}</button><button class="btn secondary" type="button" id="retake">Retake</button></div></form><p class="tiny">Saved locally first. ${drive.connected() ? (retake ? "Then the old Drive copy moves to Trash and the new photo uploads." : "Then automatically queued to Google Drive.") : "Connect Drive later or export this session to keep a backup."}</p></section>`;
   on("#reviewForm", "submit", savePhoto);
   $("#review").scrollIntoView({ behavior: "smooth", block: "start" });
   $("#retake").onclick = () => {

@@ -114,3 +114,67 @@ console.log(
 console.log(
   "PASS: masses, fill validation, leakage grouping, stable reference, naming, labels and ZIP CRC.",
 );
+
+// Random reference shots.
+{
+  const { pickShot, allCombos, comboKey, refSpots } =
+    await import("../dist/core.js");
+  const { referenceSvg } = await import("../dist/refshot.js");
+  assert.equal(allCombos().length, 3 * 3 * 3 * 6);
+  // Same shot, same picture (stable across re-renders and reloads).
+  assert.deepEqual(
+    pickShot({ seed: "run:1:0:0" }),
+    pickShot({ seed: "run:1:0:0" }),
+  );
+  // A whole fill never repeats a combination, and the first four photos use four spots.
+  const fill = [];
+  for (let i = 0; i < 162; i++)
+    fill.push(pickShot({ seed: `run:1:${i}:0`, inFill: fill }));
+  assert.equal(
+    new Set(fill.map(comboKey)).size,
+    162,
+    "no repeat inside one fill",
+  );
+  assert.equal(
+    new Set(fill.slice(0, 4).map((c) => c.spot)).size,
+    4,
+    "four different spots first",
+  );
+  // Avoids combinations from recent fills of the bottle while others are left.
+  const recent = allCombos().slice(0, 150);
+  for (let i = 0; i < 12; i++) {
+    const c = pickShot({ seed: `x:${i}`, recent });
+    assert.ok(
+      !recent.some((r) => comboKey(r) === comboKey(c)),
+      "avoids recent combinations",
+    );
+  }
+  // When everything was used recently, it still picks something new for this fill.
+  const busy = pickShot({
+    seed: "y",
+    recent: allCombos(),
+    inFill: allCombos().slice(0, 3),
+  });
+  assert.ok(
+    !allCombos()
+      .slice(0, 3)
+      .some((r) => comboKey(r) === comboKey(busy)),
+  );
+  // Words and drawing for every combination, including spots that are not drawn.
+  for (const c of [
+    ...allCombos(),
+    { facing: "front", camHeight: "eye", distance: "mid", spot: "Desk" },
+  ]) {
+    const svg = referenceSvg(c);
+    assert.ok(
+      svg.startsWith("<svg") &&
+        !svg.includes("NaN") &&
+        !svg.includes("undefined"),
+      comboKey(c),
+    );
+  }
+  assert.ok(refSpots.includes("In hand"));
+  console.log(
+    "PASS: reference shots: random, stable per shot, no repeats in a fill, four spots first, avoid recent fills, drawable.",
+  );
+}

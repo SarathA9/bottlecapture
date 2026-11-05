@@ -90,3 +90,10 @@ Google gives a browser-only app a login that lasts about 1 hour. A longer login 
 - If the quiet renewal is blocked (iPhone Safari often does), the top-right badge turns into **Tap to reconnect Drive**. One tap reconnects without an account chooser, then loads and uploads what is waiting.
 - Photos are always saved on the device first, so an expired login never loses photos. The badge shows how many are waiting.
 - Disconnect turns this off until you connect again.
+
+## Reference picture for each shot
+Before each photo, the shoot page draws a simple picture of how to take it (SVG drawn in code, no generated photos). It combines four things: which label side faces the camera (front, side, back), camera height (low, bottle level, from above), distance (close, medium, far) and the spot (table, floor, shelf, window sill, chair, in hand). That gives 162 combinations.
+- The combination is random, but it never repeats inside one fill, and it avoids combinations used in the bottle's recent fills (about the last 40 photos). The first four photos of a fill go to four different spots.
+- The same shot keeps the same picture until you save a photo. "Show a different shot" picks another one, for example when a spot is not available.
+- The photo's tags are pre-filled with the same combination. Change them only if you shot it differently.
+- A retake shows the original photo's tags. Batch import keeps its own tag choice.
