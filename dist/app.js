@@ -313,7 +313,7 @@ function legacyShootPage() {
   if (!verified)
     return `${header(retake ? `Retake · ${level * 10}% fill · view ${shots[shot][0]}` : `${level * 10}% fill · weigh first.`, retake ? `Saved photo mass: ${grams(f.mass)} g water (${grams(f.gross)} g on the balance). Skip weighing if the water has not changed.` : `Approximate target: ${grams((r.reference * level) / 10)} g of water. Keep the label on.`)}<div class="grid2"><section class="panel"><h2>${retake ? "Has the water changed since this photo?" : f ? "Confirm the same fill" : "Record the actual mass"}</h2>${retake ? `<div class="notice">If you have not added or poured out water since the original photo, keep the saved mass and go straight to the camera.</div><label class="check"><input type="checkbox" id="sameWaterOk">I have not added or removed water since the original photo.</label><button class="btn" type="button" id="sameWater" disabled>Keep ${grams(f.mass)} g and retake ${icon("arrow")}</button><hr class="divider"><h3>Water changed? Weigh again</h3>` : ""}<p>${retake ? "Refill to the saved reading and weigh with the same cap. If it matches within one scale step, the retake keeps the original label. If not, you can confirm the new reading, and only this photo gets the new measured mass." : f ? "Reweigh without adding or removing water. The reading must match this fill within one scale step. If it changed, use a new session." : "Weigh the bottle with water and its cap. Enter exactly what the balance shows."}</p><form id="massForm">${field("Filled bottle + cap (g)", "gross", "", "Empty bottle + cap: " + grams(r.tare) + " g", "decimal")}<div id="massPreview" class="notice">Your net water mass will appear here.</div><label class="check"><input type="checkbox" required>The water is still, the outside is dry, and the balance reading is stable.</label><button class="btn" type="submit" id="massSubmit">Confirm & start photos ${icon("arrow")}</button></form><button class="text-link" id="backSession">${retake ? "← Cancel retake" : "← Back to fill levels"}</button></section><section class="panel soft"><h3>Keep it consistent</h3><ol class="steps"><li>Weigh with the <strong>same cap</strong> each time.</li><li>Place the bottle on your photography surface.</li><li>Keep the scale and mass notes <strong>outside the frame</strong>.</li><li>Do not alter the fill between the ${countShots(r)} views.</li></ol><div class="notice warn">If the water line is hidden by the label, keep the photo. You will mark its visibility during review.</div></section></div>`;
   const s = shots[shot];
-  return `${header(`${retake ? "Retake · " : ""}Shot ${shot + 1} of ${countShots(r)} · ${s[0]}`, `${level * 10}% target · Actual water: ${grams(f.mass)} g`, `<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause session"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">Your next research image.</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use iPhone Camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn secondary" style="width:100%;margin:12px 0;cursor:pointer">${icon("capture")} Use iPhone Camera / choose photo<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label><p class="tiny">The live camera may use a lower resolution. Use iPhone Camera for the device’s still-photo capture. Review image dimensions before saving.</p><div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">${esc(s[3])}</div><h2 class="instruction">${s[1]}</h2><p>${s[2]}</p>${angleDiagram(shot)}<ol class="steps"><li>Original label on. Bottle upright.</li><li>Cap and base visible, with a small margin.</li><li>Tap to focus in the iPhone camera. Avoid glare and motion blur.</li><li>No scale, mass notes or measuring jug in view.</li></ol><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div><p class="tiny">${photoPath(r, level, shot).split("/").slice(0, -1).join(" / ")}</p></section></div>`;
+  return `${header(`${retake ? "Retake · " : ""}Shot ${shot + 1} of ${countShots(r)} · ${s[0]}`, `${level * 10}% target · Actual water: ${grams(f.mass)} g`, `<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause session"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}${browserWarning()}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">Your next research image.</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera button below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn secondary" style="width:100%;margin:12px 0;cursor:pointer">${icon("capture")} Use phone camera / choose photo<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label><p class="tiny">The live camera may use a lower resolution. Use the phone camera button for the phone’s normal photo quality. Review image dimensions before saving.</p><div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">${esc(s[3])}</div><h2 class="instruction">${s[1]}</h2><p>${s[2]}</p>${angleDiagram(shot)}<ol class="steps"><li>Original label on. Bottle upright.</li><li>Cap and base visible, with a small margin.</li><li>Tap to focus in the iPhone camera. Avoid glare and motion blur.</li><li>No scale, mass notes or measuring jug in view.</li></ol><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div><p class="tiny">${photoPath(r, level, shot).split("/").slice(0, -1).join(" / ")}</p></section></div>`;
 }
 function dataset() {
   return `${header("Your dataset, organised.", "Every approved photo keeps its measured mass and capture details.", `<div class="actions"><button class="btn secondary" id="pullDrive">${icon("download")} Load from Drive</button><button class="btn" id="syncNow">${icon("cloud")} Sync now</button></div>`)}<div class="notice">${photos.length} local photos · ${photos.filter((p) => p.synced).length} confirmed on Drive · ${photos.filter((p) => !p.synced).length} waiting.${trashCount ? ` ${trashCount} old Drive files waiting to move to Trash.` : ""} ${lonely() ? `<strong>Not shared yet:</strong> only you can see this dataset folder. Open Settings to invite your partner, or ask the dataset owner to invite ${esc(settingsCache.email)}. ` : ""}${settingsCache.rootInfo ? `Shared Drive folder owned by <strong>${esc(settingsCache.rootInfo.owners?.[0]?.emailAddress || "unknown")}</strong>. Changes from everyone sharing it load automatically.` : "Connect Google Drive in Settings to work on the shared dataset."}</div><div class="toolbar"><select id="datasetFilter" aria-label="Filter by bottle"><option value="all">All bottles</option>${bottles.map((b) => `<option value="${b.id}">${b.id} · ${b.name}</option>`).join("")}</select><button class="btn secondary small" id="csvExport">${icon("download")} Download labels CSV</button><button class="btn secondary small" data-export="all">Export all ZIP</button></div><p class="sync-status" id="syncStatus">${esc(syncMessage)}</p><div class="photo-grid" id="photoGrid">${photoTiles(photos)}</div>${!photos.length ? '<section class="panel empty"><h2>No photos yet.</h2><p>Your reviewed photos will appear here with their actual water mass.</p><button class="btn" data-new="B04">Start collecting</button></section>' : ""}`;
@@ -444,7 +444,7 @@ function v2ShootPage() {
           .filter(Boolean),
       ),
     ];
-  return `${header(`${retake ? "Retake · " : ""}${fillName} · photo ${shot + 1}${retake ? "" : ` of ~${goal}`}`, `Water: ${grams(f.mass)} g · The model only sees the photo.`, `${retake ? "" : '<button class="btn ghost small" id="correctFill">Correct weight</button>'}<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">${esc(pl.text)}</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn" style="width:100%;margin:12px 0 6px;cursor:pointer">${icon("capture")} Take photo with phone camera<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label>${retake ? "" : `<label class="btn secondary" style="width:100%;margin:0 0 12px;cursor:pointer">${icon("dataset")} Import several photos of this fill<input id="fileBatch" type="file" accept="image/*" multiple hidden></label>`}<div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">Next shot</div><figure class="ref-shot">${referenceSvg(pl, pl.words)}<figcaption>${esc(pl.words)}</figcaption></figure><h2 class="instruction">${esc(pl.text)}</h2>${retake ? "" : '<button class="text-link" id="otherShot">Can’t do this one? Show a different shot</button>'}<ol class="steps"><li>Bottle upright, original label on, cap on.</li><li>Whole bottle in the frame, cap to base. A busy background is fine.</li><li>No balance, jug, cups or written numbers in view.</li><li>Tap to focus on the bottle. Normal 1× lens. No flash, no portrait mode.</li></ol><p class="tiny">Spots used for this fill: ${used.length ? used.map(esc).join(", ") : "none yet"}. Aim for at least four different spots per fill.</p><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div></section></div>`;
+  return `${header(`${retake ? "Retake · " : ""}${fillName} · photo ${shot + 1}${retake ? "" : ` of ~${goal}`}`, `Water: ${grams(f.mass)} g · The model only sees the photo.`, `${retake ? "" : '<button class="btn ghost small" id="correctFill">Correct weight</button>'}<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}${browserWarning()}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">${esc(pl.text)}</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn" style="width:100%;margin:12px 0 6px;cursor:pointer">${icon("capture")} Take photo with phone camera<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label>${retake ? "" : `<label class="btn secondary" style="width:100%;margin:0 0 12px;cursor:pointer">${icon("dataset")} Import several photos of this fill<input id="fileBatch" type="file" accept="image/*" multiple hidden></label>`}<div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">Next shot</div><figure class="ref-shot">${referenceSvg(pl, pl.words)}<figcaption>${esc(pl.words)}</figcaption></figure><h2 class="instruction">${esc(pl.text)}</h2>${retake ? "" : '<button class="text-link" id="otherShot">Can’t do this one? Show a different shot</button>'}<ol class="steps"><li>Bottle upright, original label on, cap on.</li><li>Whole bottle in the frame, cap to base. A busy background is fine.</li><li>No balance, jug, cups or written numbers in view.</li><li>Tap to focus on the bottle. Normal 1× lens. No flash, no portrait mode.</li></ol><p class="tiny">Spots used for this fill: ${used.length ? used.map(esc).join(", ") : "none yet"}. Aim for at least four different spots per fill.</p><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div></section></div>`;
 }
 // The reference shot for one photo: a random combination of spot, label side,
 // camera height and distance. Never repeats inside the fill, avoids the bottle's
@@ -508,7 +508,7 @@ async function decodePhoto(file) {
     await img.decode();
   } catch {
     throw Error(
-      "A photo could not be decoded. On iPhone choose Camera → Formats → Most Compatible, or select JPEGs.",
+      "A photo could not be decoded. On iPhone set Camera → Formats → Most Compatible. On any phone, choose JPEG photos.",
     );
   }
   let blob = file;
@@ -1051,6 +1051,47 @@ function bindPhotos() {
       $("#downloadPhoto").onclick = () => download(p.blob, p.name);
     };
 }
+// ---------- Phone and browser detection, for camera help ----------
+const UA = navigator.userAgent || "";
+const isAndroid = /Android/i.test(UA);
+const isIOS =
+  /iPhone|iPad|iPod/i.test(UA) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+// Browsers built into other apps (WhatsApp, Instagram, Facebook, Google app, Android WebView)
+// often block the camera and Google sign-in.
+const inAppBrowser =
+  /WhatsApp|Instagram|FBAN|FBAV|FB_IAB|Line\/|; wv\)|GSA\//i.test(UA);
+const mainBrowser = isAndroid ? "Chrome" : isIOS ? "Safari" : "your browser";
+const PHONE_CAMERA = "phone camera / choose photo";
+function browserWarning() {
+  return inAppBrowser
+    ? `<div class="notice warn"><strong>Open this page in ${mainBrowser}.</strong> It is open inside another app (for example WhatsApp), which often blocks the camera and Google sign-in. ${isAndroid ? "Tap ⋮ (top right) → Open in Chrome." : isIOS ? "Tap the compass or ⋯ icon → Open in Safari." : "Copy the link into your browser."}</div>`
+    : "";
+}
+function cameraHelp(e) {
+  const fallback = ` Or tap “Use ${PHONE_CAMERA}” below: it opens your phone’s normal camera app and gives the sharpest photos.`,
+    name = e?.name || "";
+  if (inAppBrowser)
+    return `This page is open inside another app, which blocks the camera. Open it in ${mainBrowser}.${fallback}`;
+  if (name === "NotAllowedError" || name === "SecurityError")
+    return (
+      (isAndroid
+        ? "Camera permission is blocked for this site. In Chrome, tap the icon left of the web address → Permissions → Camera → Allow, then reload the page."
+        : isIOS
+          ? "Camera permission is blocked for this site. In Safari, tap aA in the address bar → Website Settings → Camera → Allow, then reload the page."
+          : "Camera permission is blocked for this site. Allow the camera in your browser’s site settings, then reload.") +
+      fallback
+    );
+  if (
+    name === "NotReadableError" ||
+    name === "AbortError" ||
+    name === "TrackStartError"
+  )
+    return `The camera could not start. Close other apps using the camera (camera app, video calls), then try again.${fallback}`;
+  if (name === "NotFoundError" || name === "OverconstrainedError")
+    return `No usable camera was found.${fallback}`;
+  return `The live camera did not start${name ? ` (${name})` : ""}.${fallback}`;
+}
 // Size the live box to the video's real aspect ratio, so the guide frame sits on the image.
 // The part of the video frame that becomes the photo. If the phone is upright but the
 // camera stream is sideways, use a centred 3:4 portrait crop, so every photo is portrait.
@@ -1093,15 +1134,22 @@ async function startCamera() {
   stopCamera();
   if (!navigator.mediaDevices?.getUserMedia)
     throw Error(
-      "Live camera needs Safari over HTTPS. Use “iPhone Camera / choose photo” below.",
+      inAppBrowser
+        ? cameraHelp()
+        : `The live camera needs ${mainBrowser} on a secure (https) page. Use “${PHONE_CAMERA}” below.`,
     );
   $("#viewfinder").innerHTML =
     '<div class="live-wrap" id="liveWrap"><video id="video" autoplay muted playsinline></video><div class="frame"></div></div><span class="cam-label" id="camLabel">STARTING CAMERA…</span>';
   document.body.classList.add("camera-open");
   const portrait = () => window.innerHeight >= window.innerWidth,
     env = { facingMode: { ideal: "environment" } },
-    // Ask for the full 4:3 sensor. If the phone is upright but the stream comes back
-    // sideways, ask again with portrait dimensions, then fall back to the default stream.
+    wait = (ms) => new Promise((r) => setTimeout(r, ms)),
+    upright = () => {
+      const v = $("#video");
+      return portrait() === v.videoHeight >= v.videoWidth;
+    },
+    // Ask for the full 4:3 sensor first. If an upright phone gets a sideways stream,
+    // try portrait dimensions. Then simpler requests, for phones that refuse big sizes.
     attempts = [
       { ...env, width: { ideal: 4032 }, height: { ideal: 3024 } },
       {
@@ -1110,21 +1158,35 @@ async function startCamera() {
         height: { ideal: 4032 },
         aspectRatio: { ideal: 3 / 4 },
       },
+      { ...env, width: { ideal: 1920 }, height: { ideal: 1440 } },
       env,
+      true,
     ];
   try {
-    let lastError;
+    let lastError,
+      working = null;
     for (const video of attempts) {
       try {
-        stream?.getTracks().forEach((t) => t.stop());
+        if (stream) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+          // Many phones (often Android) need a moment before the camera can be opened again.
+          await wait(400);
+        }
         stream = await openStream(video);
-        const v = $("#video");
-        if (portrait() === v.videoHeight >= v.videoWidth) break;
+        working = video;
+        if (upright()) break;
       } catch (e) {
         lastError = e;
-        stream?.getTracks().forEach((t) => t.stop());
         stream = null;
+        // A refused permission will not change by asking again.
+        if (e.name === "NotAllowedError" || e.name === "SecurityError") break;
       }
+    }
+    // A sideways stream is still usable: the photo is cropped to portrait.
+    if (!stream && working) {
+      await wait(500);
+      stream = await openStream(working);
     }
     if (!stream) throw lastError || Error("No camera stream.");
     if (page !== "shoot" || !verified) {
@@ -1145,9 +1207,7 @@ async function startCamera() {
     console.error(e);
     stopCamera();
     if (page === "shoot") render();
-    throw Error(
-      "Camera unavailable or permission denied. Use “iPhone Camera / choose photo” below, or allow camera access in Safari settings.",
-    );
+    throw Error(cameraHelp(e));
   }
 }
 async function captureLive() {
@@ -1181,7 +1241,7 @@ async function prepareCandidate(file) {
     await img.decode();
   } catch {
     throw Error(
-      "This image format could not be decoded. In iPhone Camera settings choose Most Compatible, or select a JPEG.",
+      "This image format could not be decoded. On iPhone set Camera → Formats → Most Compatible. On any phone, choose a JPEG photo.",
     );
   }
   let blob = file;
@@ -1206,7 +1266,7 @@ async function prepareCandidate(file) {
     `<img src="${objectURL(blob)}" alt="Review your captured bottle photo"><span class="cam-label">REVIEW · ${candidate.width} × ${candidate.height}</span>`;
   $("#cameraControls").innerHTML = "";
   $("#review").innerHTML =
-    `<section class="panel"><div class="eyebrow">Review before saving</div><h3>${grams(activeFill().mass)} g · ${isV2(current) ? `${fillLabel()} · photo ${activeShot + 1}` : `View ${shots[activeShot][0]}`}</h3>${Math.min(candidate.width, candidate.height) < 1000 ? '<div class="notice warn">Low image resolution. Consider retaking with iPhone Camera.</div>' : ""}<form id="reviewForm">${isV2(current) ? tagForm(shotPlan(current, level, activeShot), retakeTags()?.spot ?? shotPlan(current, level, activeShot).spot, false) : `<label class="field" style="margin-top:16px">Water surface visibility<select name="visibility" required><option value="">Choose after inspecting the photo</option><option value="visible">Visible</option><option value="partial">Partly visible</option><option value="hidden">Hidden behind label / bottle</option><option value="uncertain">Uncertain</option></select></label>`}<div class="actions"><button class="btn" type="submit" id="savePhoto">${retake ? "Save retake" : "Save & Next"} ${icon("arrow")}</button><button class="btn secondary" type="button" id="retake">Retake</button></div></form><p class="tiny">Saved locally first. ${drive.connected() ? (retake ? "Then the old Drive copy moves to Trash and the new photo uploads." : "Then automatically queued to Google Drive.") : "Connect Drive later or export this session to keep a backup."}</p></section>`;
+    `<section class="panel"><div class="eyebrow">Review before saving</div><h3>${grams(activeFill().mass)} g · ${isV2(current) ? `${fillLabel()} · photo ${activeShot + 1}` : `View ${shots[activeShot][0]}`}</h3>${Math.min(candidate.width, candidate.height) < 1000 ? '<div class="notice warn">Low image resolution. Consider retaking with the phone camera button.</div>' : ""}<form id="reviewForm">${isV2(current) ? tagForm(shotPlan(current, level, activeShot), retakeTags()?.spot ?? shotPlan(current, level, activeShot).spot, false) : `<label class="field" style="margin-top:16px">Water surface visibility<select name="visibility" required><option value="">Choose after inspecting the photo</option><option value="visible">Visible</option><option value="partial">Partly visible</option><option value="hidden">Hidden behind label / bottle</option><option value="uncertain">Uncertain</option></select></label>`}<div class="actions"><button class="btn" type="submit" id="savePhoto">${retake ? "Save retake" : "Save & Next"} ${icon("arrow")}</button><button class="btn secondary" type="button" id="retake">Retake</button></div></form><p class="tiny">Saved locally first. ${drive.connected() ? (retake ? "Then the old Drive copy moves to Trash and the new photo uploads." : "Then automatically queued to Google Drive.") : "Connect Drive later or export this session to keep a backup."}</p></section>`;
   on("#reviewForm", "submit", savePhoto);
   $("#review").scrollIntoView({ behavior: "smooth", block: "start" });
   $("#retake").onclick = () => {
