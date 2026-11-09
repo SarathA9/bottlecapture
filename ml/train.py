@@ -189,6 +189,45 @@ def report(items, pred, title):
     return dict(mae=float(err.mean()), fill_mae=float(np.mean(fill_err)), n=len(items))
 
 
+# ---------------------------------------------------------------- linear probe
+
+
+@torch.no_grad()
+def embed(model, items, size, device):
+    """Frozen pretrained features (photo and mirror image averaged)."""
+    ds = Photos(items, size, False, 1.0)
+    model.eval()
+    out = []
+    for x, _ in DataLoader(ds, batch_size=16):
+        x = x.to(device)
+        out.append(((model(x) + model(torch.flip(x, dims=[3]))) / 2).cpu())
+    return torch.cat(out).numpy()
+
+
+def linear_probe(items, folds, args, device):
+    """Keep the network frozen; fit only a ridge regression on its features.
+    Far fewer free settings than fine-tuning, so it memorises less on small data."""
+    from sklearn.linear_model import RidgeCV
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    model, _ = build(args.arch, not args.no_pretrained)
+    if args.arch == "efficientnet_b0":
+        model.classifier = nn.Identity()
+    else:
+        model.classifier[2] = nn.Identity()
+    model.to(device)
+    X = embed(model, items, args.size, device)
+    y = np.array([i["water"] for i in items])
+    preds = np.zeros(len(items))
+    for held in folds:
+        te = np.array([i["fill"] in held for i in items])
+        reg = make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-1, 5, 25)))
+        reg.fit(X[~te], y[~te])
+        preds[te] = np.clip(reg.predict(X[te]), 0, None)
+    return preds
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -208,6 +247,7 @@ def main():
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-pretrained", action="store_true", help="only for offline smoke tests")
+    ap.add_argument("--probe", action="store_true", help="with --cv: frozen network + ridge regression")
     args = ap.parse_args()
 
     random.seed(args.seed)
@@ -224,6 +264,11 @@ def main():
         order = fills[:]
         rng.shuffle(order)
         folds = [order[k :: args.cv] for k in range(args.cv)]
+        if args.probe:
+            preds = linear_probe(items, folds, args, device)
+            res = report(items, preds, f"Linear probe, grouped {args.cv}-fold (whole fills held out)")
+            json.dump(res, open(os.path.join(args.out, "probe_cv.json"), "w"), indent=1)
+            return
         preds = np.zeros(len(items))
         for k, held in enumerate(folds):
             print(f"\nFold {k+1}/{args.cv}: holding out fills {held}")
