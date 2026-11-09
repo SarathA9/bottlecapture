@@ -31,10 +31,18 @@ fi
 source "$HOME/bottle_venv/bin/activate"
 pip install -q --upgrade pip
 pip install -q -r "$HERE/requirements.txt"
-python - <<'EOF'
-import torch
-print("torch", torch.__version__, "| CUDA available:", torch.cuda.is_available())
-EOF
+gpu_ok() {
+  python -c "import torch,sys; ok=torch.cuda.is_available() and torch.zeros(1).cuda().item()==0; print('torch', torch.__version__, '| GPU works:', ok); sys.exit(0 if ok else 1)"
+}
+if ! gpu_ok; then
+  # The newest PyTorch can need a newer driver than the lab has. CUDA 12.6 builds run on it.
+  echo "GPU not usable with this PyTorch build; installing the CUDA 12.6 build..."
+  pip install -q --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126
+  if ! gpu_ok; then
+    echo "The GPU still does not work with PyTorch. Send the lines above to Claude."
+    exit 1
+  fi
+fi
 
 cd "$HERE"
 nohup bash -c "
