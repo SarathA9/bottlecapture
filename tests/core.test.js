@@ -87,6 +87,31 @@ for (let i = 0; i < 200; i++) {
   const t = suggestTarget(750, []);
   assert.ok(t >= 0 && t <= 750 && t % 5 === 0);
 }
+// Your B02 fills: aim at the gaps, never repeat an amount.
+{
+  const b02 = [0, 40, 65, 100, 145, 180, 195, 225, 270, 305, 350, 435, 480].map(
+    (mass) => ({ mass }),
+  );
+  const seen = new Set();
+  for (let i = 0; i < 400; i++) {
+    const t = suggestTarget(500, b02);
+    seen.add(t);
+    assert.ok(
+      b02.every((f) => Math.abs(f.mass - t) >= 10),
+      "no repeat of an existing fill: " + t,
+    );
+    assert.ok(t > 350 && t < 435, "aims at the biggest gap 350–435 g: " + t);
+  }
+  assert.ok(seen.size > 3, "still random inside the gap");
+  // Amounts used in another split are avoided too, while others are free.
+  for (let i = 0; i < 100; i++) {
+    const t = suggestTarget(500, [], Math.random, [{ mass: 250 }]);
+    assert.ok(Math.abs(t - 250) >= 10);
+  }
+  // A crowded bottle still gets a suggestion.
+  const dense = Array.from({ length: 101 }, (_, i) => ({ mass: i * 5 }));
+  assert.ok(Number.isFinite(suggestTarget(500, dense)));
+}
 assert.notEqual(planFor(1, 0).text, planFor(2, 0).text); // each fill starts differently
 const p2 = {
   ...p,

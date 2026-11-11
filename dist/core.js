@@ -291,14 +291,34 @@ export function coverage(fills, reference) {
 // Suggest the next pour. Choose the least-covered tenth of the range (ties at
 // random), then a random amount inside it, so masses are spread evenly and are
 // never stuck on round 10% steps. The real balance reading is the label.
-export function suggestTarget(reference, fills, rand = Math.random) {
-  const c = coverage(fills, reference),
-    low = Math.min(...c),
-    choices = c.map((n, i) => (n === low ? i : -1)).filter((i) => i >= 0),
-    bin = choices[Math.floor(rand() * choices.length)];
-  if (bin === 0 && rand() < 0.3) return 0;
-  const g = ((bin + rand()) / BINS) * reference;
-  return Math.max(0, Math.round(g / 5) * 5);
+// Suggest the next fill amount: aim at the biggest gaps between the fills you
+// already have, and never suggest within NEAR_G of an existing fill if any other
+// amount is still free. Random among the best candidates, rounded to 5 g.
+// fills: fills of this bottle in this split (decides where the gaps are).
+// avoid: all fills of this bottle in any split (amounts not to repeat).
+export const NEAR_G = 10;
+export function suggestTarget(
+  reference,
+  fills,
+  rand = Math.random,
+  avoid = [],
+) {
+  const top = Math.max(5, Math.round(reference / 5) * 5),
+    have = fills.map((f) => f.mass).filter(Number.isFinite),
+    taken = [...have, ...avoid.map((f) => f.mass).filter(Number.isFinite)],
+    candidates = [];
+  for (let g = 0; g <= top; g += 5) candidates.push(g);
+  const gapTo = (g) =>
+      have.length ? Math.min(...have.map((m) => Math.abs(g - m))) : Infinity,
+    free = candidates.filter((g) =>
+      taken.every((m) => Math.abs(g - m) >= NEAR_G),
+    ),
+    pool = free.length ? free : candidates,
+    best = Math.max(...pool.map(gapTo)),
+    // Everything at least 75% as far from existing fills as the best spot.
+    good =
+      best === Infinity ? pool : pool.filter((g) => gapTo(g) >= best * 0.75);
+  return good[Math.floor(rand() * good.length)];
 }
 export const esc = (s) =>
   String(s ?? "").replace(

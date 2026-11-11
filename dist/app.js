@@ -481,6 +481,8 @@ function v2ShootPage() {
       pendingTarget = suggestTarget(
         r.reference,
         bottleFills(r.bottle, r.split),
+        Math.random,
+        bottleFills(r.bottle),
       );
     const sameBlock = f
       ? `<div class="notice">This fill was weighed at <strong>${grams(f.mass)} g</strong> water (${grams(f.gross)} g on the balance). If you have not poured anything in or out, continue straight away.</div><label class="check"><input type="checkbox" id="sameWaterOk">I have not added or removed water since then.</label><button class="btn" type="button" id="sameWater" disabled>Continue with ${grams(f.mass)} g ${icon("arrow")}</button><button class="text-link" id="correctFill">Saved weight is wrong? Correct it</button><hr class="divider"><h3>Not sure? Weigh again</h3>`
