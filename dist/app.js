@@ -316,7 +316,73 @@ function legacyShootPage() {
   return `${header(`${retake ? "Retake · " : ""}Shot ${shot + 1} of ${countShots(r)} · ${s[0]}`, `${level * 10}% target · Actual water: ${grams(f.mass)} g`, `<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause session"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}${browserWarning()}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">Your next research image.</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera button below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn secondary" style="width:100%;margin:12px 0;cursor:pointer">${icon("capture")} Use phone camera / choose photo<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label><p class="tiny">The live camera may use a lower resolution. Use the phone camera button for the phone’s normal photo quality. Review image dimensions before saving.</p><div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">${esc(s[3])}</div><h2 class="instruction">${s[1]}</h2><p>${s[2]}</p>${angleDiagram(shot)}<ol class="steps"><li>Original label on. Bottle upright.</li><li>Cap and base visible, with a small margin.</li><li>Tap to focus in the iPhone camera. Avoid glare and motion blur.</li><li>No scale, mass notes or measuring jug in view.</li></ol><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div><p class="tiny">${photoPath(r, level, shot).split("/").slice(0, -1).join(" / ")}</p></section></div>`;
 }
 function dataset() {
-  return `${header("Your dataset, organised.", "Every approved photo keeps its measured mass and capture details.", `<div class="actions"><button class="btn secondary" id="pullDrive">${icon("download")} Load from Drive</button><button class="btn" id="syncNow">${icon("cloud")} Sync now</button></div>`)}<div class="notice">${photos.length} local photos · ${photos.filter((p) => p.synced).length} confirmed on Drive · ${photos.filter((p) => !p.synced).length} waiting.${trashCount ? ` ${trashCount} old Drive files waiting to move to Trash.` : ""} ${lonely() ? `<strong>Not shared yet:</strong> only you can see this dataset folder. Open Settings to invite your partner, or ask the dataset owner to invite ${esc(settingsCache.email)}. ` : ""}${settingsCache.rootInfo ? `Shared Drive folder owned by <strong>${esc(settingsCache.rootInfo.owners?.[0]?.emailAddress || "unknown")}</strong>. Changes from everyone sharing it load automatically.` : "Connect Google Drive in Settings to work on the shared dataset."}</div><div class="toolbar"><select id="datasetFilter" aria-label="Filter by bottle"><option value="all">All bottles</option>${bottles.map((b) => `<option value="${b.id}">${b.id} · ${b.name}</option>`).join("")}</select><button class="btn secondary small" id="csvExport">${icon("download")} Download labels CSV</button><button class="btn secondary small" data-export="all">Export all ZIP</button></div><p class="sync-status" id="syncStatus">${esc(syncMessage)}</p><div class="photo-grid" id="photoGrid">${photoTiles(photos)}</div>${!photos.length ? '<section class="panel empty"><h2>No photos yet.</h2><p>Your reviewed photos will appear here with their actual water mass.</p><button class="btn" data-new="B04">Start collecting</button></section>' : ""}`;
+  return `${header("Your dataset, organised.", "Every approved photo keeps its measured mass and capture details.", `<div class="actions"><button class="btn secondary" id="pullDrive">${icon("download")} Load from Drive</button><button class="btn" id="syncNow">${icon("cloud")} Sync now</button></div>`)}<div class="notice">${photos.length} local photos · ${photos.filter((p) => p.synced).length} confirmed on Drive · ${photos.filter((p) => !p.synced).length} waiting.${trashCount ? ` ${trashCount} old Drive files waiting to move to Trash.` : ""} ${lonely() ? `<strong>Not shared yet:</strong> only you can see this dataset folder. Open Settings to invite your partner, or ask the dataset owner to invite ${esc(settingsCache.email)}. ` : ""}${settingsCache.rootInfo ? `Shared Drive folder owned by <strong>${esc(settingsCache.rootInfo.owners?.[0]?.emailAddress || "unknown")}</strong>. Changes from everyone sharing it load automatically.` : "Connect Google Drive in Settings to work on the shared dataset."}</div>${measurements()}<div class="toolbar"><select id="datasetFilter" aria-label="Filter by bottle"><option value="all">All bottles</option>${bottles.map((b) => `<option value="${b.id}">${b.id} · ${b.name}</option>`).join("")}</select><button class="btn secondary small" id="csvExport">${icon("download")} Download labels CSV</button><button class="btn secondary small" data-export="all">Export all ZIP</button></div><p class="sync-status" id="syncStatus">${esc(syncMessage)}</p><div class="photo-grid" id="photoGrid">${photoTiles(photos)}</div>${!photos.length ? '<section class="panel empty"><h2>No photos yet.</h2><p>Your reviewed photos will appear here with their actual water mass.</p><button class="btn" data-new="B04">Start collecting</button></section>' : ""}`;
+}
+// ---------- Measurements by bottle (read-only overview) ----------
+// Every weighed fill per bottle, sorted by grams, with its photo count.
+// Reads the runs and photos already in memory; it never changes any data.
+function measureFills(bottleId) {
+  const list = [];
+  for (const r of runs) {
+    if (r.bottle !== bottleId) continue;
+    for (const l of Object.keys(r.fills || {}).map(Number)) {
+      const f = r.fills[l],
+        shots = photos.filter((p) => p.run === r.id && p.level === l);
+      if (typeof f?.mass !== "number") continue;
+      const when =
+        shots
+          .map((p) => p.takenAt)
+          .filter(Boolean)
+          .sort()[0] ||
+        f.measuredAt ||
+        r.created ||
+        "";
+      list.push({
+        run: r,
+        level: l,
+        mass: f.mass,
+        name: isV2(r) ? `F${String(l).padStart(2, "0")}` : `${l * 10}%`,
+        photos: shots.length,
+        onDrive: shots.filter((p) => p.synced).length,
+        when,
+      });
+    }
+  }
+  return list.sort((a, b) => a.mass - b.mass || a.when.localeCompare(b.when));
+}
+function measureStrip(list, full) {
+  const max = Math.max(full || 0, ...list.map((x) => x.mass), 100),
+    x = (g) => 12 + (g / max) * 576;
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((t) => Math.round(t * max));
+  return `<svg class="mbb-strip" viewBox="0 0 600 54" role="img" aria-label="Fills from empty to full"><rect x="12" y="20" width="576" height="10" rx="5" fill="var(--soft, #eef2e8)"/>${full ? `<path d="M${x(full)} 14v22" stroke="var(--ink, #1f3b30)" stroke-width="1.5" stroke-dasharray="3 2"/><text x="${x(full)}" y="11" text-anchor="middle" font-size="10" fill="var(--muted, #6e8268)">full ${grams(full)} g</text>` : ""}${list.map((f) => `<circle cx="${x(f.mass).toFixed(1)}" cy="25" r="${f.photos ? 6 : 4}" fill="${f.photos ? "var(--green, #2f6b4f)" : "#fff"}" stroke="var(--green, #2f6b4f)" stroke-width="1.5" opacity=".85"><title>${f.name} · ${grams(f.mass)} g · ${f.photos} photos</title></circle>`).join("")}${ticks.map((t) => `<text x="${x(t)}" y="48" text-anchor="middle" font-size="10" fill="var(--muted, #6e8268)">${grams(t)}</text>`).join("")}</svg>`;
+}
+function measureGap(list, full) {
+  const points = [0, ...list.map((f) => f.mass), ...(full ? [full] : [])].sort(
+    (a, b) => a - b,
+  );
+  let gap = [0, 0];
+  for (let i = 1; i < points.length; i++)
+    if (points[i] - points[i - 1] > gap[1] - gap[0])
+      gap = [points[i - 1], points[i]];
+  return gap[1] - gap[0] > 0 ? gap : null;
+}
+function measurements() {
+  const cards = bottles.map((b) => {
+    const list = measureFills(b.id),
+      n = list.reduce((a, f) => a + f.photos, 0),
+      full = Math.max(
+        0,
+        ...runs
+          .filter((r) => r.bottle === b.id)
+          .map((r) => Number(r.reference) || 0),
+      ),
+      gap = measureGap(list, full),
+      splits = [...new Set(list.map((f) => f.run.split))].join(", ");
+    if (!list.length)
+      return `<details class="mbb-card"><summary><strong>${b.id} · ${esc(b.name)}</strong><span class="badge warn">No fills yet</span></summary><p class="tiny">${esc(b.detail)}. Start a session for this bottle to add fills.</p></details>`;
+    return `<details class="mbb-card" open><summary><strong>${b.id} · ${esc(b.name)}</strong><span class="badge">${list.length} ${list.length === 1 ? "fill" : "fills"} · ${n} ${n === 1 ? "photo" : "photos"}</span></summary><p class="tiny">${esc(b.detail)} · ${grams(list[0].mass)}–${grams(list.at(-1).mass)} g · ${esc(splits)}${gap && gap[1] - gap[0] >= 50 ? ` · biggest gap ${grams(gap[0])}–${grams(gap[1])} g` : ""}</p>${measureStrip(list, full)}<div class="mbb-scroll"><table class="mbb-table"><thead><tr><th>Water</th><th>Fill</th><th>Session</th><th>Photos</th><th></th></tr></thead><tbody>${list.map((f) => `<tr class="${f.photos ? "" : "muted"}"><td><strong>${grams(f.mass)} g</strong></td><td>${f.name}</td><td>${esc(f.run.session)} · ${esc(f.run.instance || "")}${f.run.archived ? " · archived" : ""}<br><small>${esc(f.run.split || "")}${f.when ? " · " + new Date(f.when).toLocaleDateString() : ""}</small></td><td>${f.photos}${f.photos && f.onDrive < f.photos ? `<br><small>${f.photos - f.onDrive} not on Drive</small>` : ""}${f.photos ? "" : "<br><small>weighed, no photos</small>"}</td><td><button class="text-link" data-run="${f.run.id}">Open</button></td></tr>`).join("")}</tbody></table></div></details>`;
+  });
+  return `<section class="panel mbb"><div class="bar"><h2>Measurements by bottle</h2><span class="tiny">Read-only overview</span></div><p class="tiny">Every weighed fill, sorted by grams, with how many photos it has. Filled dots have photos; open dots were weighed but have none yet.</p>${cards.join("")}</section>`;
 }
 function photoTiles(list) {
   return [...list]

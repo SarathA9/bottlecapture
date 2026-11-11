@@ -1210,3 +1210,60 @@ button.badge {
   text-align: center;
   padding-top: 6px;
 }
+
+/* Measurements by bottle */
+.mbb .mbb-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 14px;
+  margin-top: 10px;
+  background: #fff;
+}
+.mbb .mbb-card summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.mbb .mbb-card summary::-webkit-details-marker {
+  display: none;
+}
+.mbb-strip {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 6px 0;
+}
+.mbb-scroll {
+  overflow-x: auto;
+}
+.mbb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.mbb-table th,
+.mbb-table td {
+  text-align: left;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.mbb-table th {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.mbb-table tr.muted td {
+  color: var(--muted);
+}
+.mbb-table small {
+  color: var(--muted);
+}
+
+.mbb-table td:first-child,
+.mbb-table td:nth-child(2) {
+  white-space: nowrap;
+}
