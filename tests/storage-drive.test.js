@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
-import { put, get, addPhoto, all } from "../dist/db.js";
-import { connect, sync } from "../dist/drive.js";
+import { put, get, addPhoto, all, remove } from "../dist/db.js";
+import { connect, sync, setRetryWait } from "../dist/drive.js";
 const r = {
   id: "run1",
   bottle: "B04",
@@ -41,7 +41,7 @@ const files = new Map();
 let me = "test@example.invalid";
 let sequence = 0,
   imageCreates = 0,
-  failLabel = true;
+  failLabel = 3; // Drive answers 503 this many times in a row
 globalThis.google = {
   accounts: {
     oauth2: {
@@ -140,8 +140,8 @@ globalThis.fetch = async (url, opts = {}) => {
       meta = JSON.parse(parts[1].split("\r\n\r\n")[1].trim());
       data = parts[2].split("\r\n\r\n").slice(1).join("\r\n\r\n").slice(0, -2);
       size = new Blob([data]).size;
-      if (meta.mimeType === "application/json" && failLabel) {
-        failLabel = false;
+      if (meta.mimeType === "application/json" && failLabel > 0) {
+        failLabel--;
         return response({ error: { message: "temporary failure" } }, 503);
       }
       if (meta.mimeType === "image/jpeg") imageCreates++;
@@ -163,6 +163,9 @@ globalThis.fetch = async (url, opts = {}) => {
   throw Error("Unexpected test request " + url);
 };
 await connect("test.apps.googleusercontent.com");
+setRetryWait(5);
+// Three 503s in a row: each photo gets three tries, then the sync stops and the
+// photo stays queued with its Drive IDs (the app retries again later).
 await assert.rejects(sync(), /temporary failure/);
 const pending = await get("photos", p.id);
 assert.equal(pending.synced, false);
@@ -174,6 +177,30 @@ assert.equal(saved.synced, true);
 assert.deepEqual(saved.cloud, ids);
 assert.equal(imageCreates, 1);
 assert.equal((await all("photos")).length, 1);
+// One hiccup (a 503) is retried inside the same sync and succeeds.
+const q = {
+  ...saved,
+  id: saved.id.replace(/:\d+$/, ":7"),
+  shot: 7,
+  name: saved.name.replace(".jpg", "b.jpg"),
+  synced: false,
+  cloud: undefined,
+};
+delete q.syncedAt;
+await put("photos", q);
+failLabel = 1;
+await sync();
+assert.equal((await get("photos", q.id)).synced, true);
+assert.equal(imageCreates, 2);
+// Remove the extra photo again so the later tests see the original dataset.
+const extra = await get("photos", q.id);
+files.delete(extra.cloud.image);
+files.delete(extra.cloud.label);
+await remove("photos", q.id);
+imageCreates = 1;
+console.log(
+  "PASS: a single Drive hiccup is retried inside one sync, without duplicates.",
+);
 console.log(
   "PASS: atomic photo save, duplicate rejection, original bytes, interrupted Drive label upload, persisted IDs and retry without duplicate JPEG. Mock provider only.",
 );

@@ -13,6 +13,29 @@ let token = "",
   expires = 0,
   busy = false;
 export const connected = () => !!token && Date.now() < expires;
+export const isBusy = () => busy;
+let retryWait = 3000;
+export const setRetryWait = (ms) => (retryWait = ms); // tests only
+// iPhone Safari freezes network requests as soon as the page goes to the background
+// (phone camera, lock screen, app switch). A request that started before that usually
+// never finishes, so it is dropped when the page comes back and the upload retries.
+const live = new Set();
+let hiddenAt = 0;
+if (typeof document !== "undefined")
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) hiddenAt = Date.now();
+    else
+      for (const r of live)
+        if (r.started < hiddenAt)
+          r.ctl.abort(new DOMException("Paused by the phone", "AbortError"));
+  });
+// Network hiccups, timeouts, Google rate limits and server errors are worth retrying.
+export const transient = (e) =>
+  e?.name === "TypeError" ||
+  e?.name === "AbortError" ||
+  e?.name === "TimeoutError" ||
+  e?.status === 429 ||
+  e?.status >= 500;
 // Full Drive access lets two Google accounts work in one shared dataset folder.
 // (drive.file only sees files this account created, so a friend's uploads were invisible.)
 export const SCOPE = "https://www.googleapis.com/auth/drive";
@@ -163,16 +186,34 @@ async function api(path, options = {}) {
   if (!connected())
     throw Error("Reconnect Google Drive to continue uploading.");
   const { upload, raw, ...opts } = options;
-  const r = await fetch(
-    (upload
-      ? "https://www.googleapis.com/upload/drive/v3"
-      : "https://www.googleapis.com/drive/v3") + path,
-    {
-      ...opts,
-      headers: { Authorization: "Bearer " + token, ...opts.headers },
-      signal: AbortSignal.timeout(90000),
-    },
-  );
+  const req = { started: Date.now(), ctl: new AbortController() },
+    timer = setTimeout(
+      () =>
+        req.ctl.abort(
+          new DOMException("Drive did not answer in time", "TimeoutError"),
+        ),
+      90000,
+    );
+  live.add(req);
+  let r;
+  try {
+    r = await fetch(
+      (upload
+        ? "https://www.googleapis.com/upload/drive/v3"
+        : "https://www.googleapis.com/drive/v3") + path,
+      {
+        ...opts,
+        headers: { Authorization: "Bearer " + token, ...opts.headers },
+        signal: req.ctl.signal,
+      },
+    );
+  } catch (e) {
+    const why = req.ctl.signal.reason;
+    throw why instanceof DOMException ? why : e;
+  } finally {
+    clearTimeout(timer);
+    live.delete(req);
+  }
   if (r.status === 401) {
     clearSession();
     throw Error("Google session expired. Reconnect to continue.");
@@ -728,64 +769,78 @@ export async function sync(onStatus = () => {}) {
           const r = await get("runs", p.run);
           if (!r) continue;
           onStatus(`Uploading ${i + 1} of ${pending.length} · ${p.name}`);
-          try {
-            const b = await folder(r.bottle, r.bottle, root),
-              instance = await folder(
-                r.bottle + "/" + r.instance,
-                r.instance,
-                b,
-              ),
-              sess = await folder(
-                r.id,
-                r.session + "_" + r.id.slice(0, 8),
-                instance,
-              ),
-              level = await folder(
-                r.id + "/" + p.level,
-                fillFolder(r, p.level),
-                sess,
+          for (let attempt = 1; ; attempt++)
+            try {
+              const b = await folder(r.bottle, r.bottle, root),
+                instance = await folder(
+                  r.bottle + "/" + r.instance,
+                  r.instance,
+                  b,
+                ),
+                sess = await folder(
+                  r.id,
+                  r.session + "_" + r.id.slice(0, 8),
+                  instance,
+                ),
+                level = await folder(
+                  r.id + "/" + p.level,
+                  fillFolder(r, p.level),
+                  sess,
+                );
+              // A corrected label keeps its uploaded image and only gets a new JSON.
+              if (!p.cloud?.image || !p.cloud?.label) {
+                p.cloud = {
+                  image: p.cloud?.image || (await nextId()),
+                  label: p.cloud?.label || (await nextId()),
+                };
+                await put("photos", p);
+              }
+              const image = await ensureFile(
+                p.cloud.image,
+                { name: p.name, parents: [level], mimeType: "image/jpeg" },
+                p.blob,
               );
-            // A corrected label keeps its uploaded image and only gets a new JSON.
-            if (!p.cloud?.image || !p.cloud?.label) {
-              p.cloud = {
-                image: p.cloud?.image || (await nextId()),
-                label: p.cloud?.label || (await nextId()),
-              };
+              if (image.trashed || Number(image.size) !== p.blob.size)
+                throw Error(
+                  "Cloud photo size differs or the photo is in Trash. Check Drive before continuing.",
+                );
+              const label = new Blob(
+                [JSON.stringify(labelFor(p, r), null, 2)],
+                {
+                  type: "application/json",
+                },
+              );
+              const record = await ensureFile(
+                p.cloud.label,
+                {
+                  name: p.name.replace(".jpg", ".json"),
+                  parents: [level],
+                  mimeType: "application/json",
+                },
+                label,
+              );
+              if (record.trashed || Number(record.size) !== label.size)
+                throw Error("Cloud measurement record needs checking.");
+              uploaded++;
+              p.synced = true;
+              p.syncedAt = new Date().toISOString();
               await put("photos", p);
+              onStatus(`Saved to Google Drive · ${p.name}`);
+              break;
+            } catch (e) {
+              // A short wait and a second try fixes most mobile-network hiccups.
+              if (transient(e) && attempt < 3 && connected()) {
+                onStatus(`Connection hiccup, trying ${p.name} again…`);
+                await new Promise((ok) => setTimeout(ok, attempt * retryWait));
+                p = (await get("photos", p.id)) || p;
+                if (p.synced) break;
+                continue;
+              }
+              if (e.code !== "deleted") throw e;
+              // Kept on this device, never removed automatically. Export or delete it here.
+              blocked.add(p.id);
+              break;
             }
-            const image = await ensureFile(
-              p.cloud.image,
-              { name: p.name, parents: [level], mimeType: "image/jpeg" },
-              p.blob,
-            );
-            if (image.trashed || Number(image.size) !== p.blob.size)
-              throw Error(
-                "Cloud photo size differs or the photo is in Trash. Check Drive before continuing.",
-              );
-            const label = new Blob([JSON.stringify(labelFor(p, r), null, 2)], {
-              type: "application/json",
-            });
-            const record = await ensureFile(
-              p.cloud.label,
-              {
-                name: p.name.replace(".jpg", ".json"),
-                parents: [level],
-                mimeType: "application/json",
-              },
-              label,
-            );
-            if (record.trashed || Number(record.size) !== label.size)
-              throw Error("Cloud measurement record needs checking.");
-            uploaded++;
-            p.synced = true;
-            p.syncedAt = new Date().toISOString();
-            await put("photos", p);
-            onStatus(`Saved to Google Drive · ${p.name}`);
-          } catch (e) {
-            if (e.code !== "deleted") throw e;
-            // Kept on this device, never removed automatically. Export or delete it here.
-            blocked.add(p.id);
-          }
         }
       }
       onStatus(

@@ -160,9 +160,9 @@ function lonely() {
 const driveWanted = () =>
   !!settingsCache.wanted && !!settingsCache.client && !!settingsCache.email;
 function reconnectBadge() {
-  if (drive.connected())
-    return '<span class="badge"><i class="dot"></i>Drive connected</span>';
   const waiting = photos.filter((p) => !p.synced).length;
+  if (drive.connected())
+    return `<span class="badge"><i class="dot"></i>${waiting ? `Uploading · ${waiting} waiting` : "Drive connected"}</span>`;
   if (driveWanted() && navigator.onLine)
     return `<button class="badge warn" id="reconnectBadge"><i class="dot"></i>Tap to reconnect Drive${waiting ? ` · ${waiting} waiting` : ""}</button>`;
   return `<span class="badge warn"><i class="dot"></i>${navigator.onLine ? "Local collection" : "Offline"}${waiting ? ` · ${waiting} waiting` : ""}</span>`;
@@ -214,7 +214,7 @@ function shell(content) {
     )
     .join(
       "",
-    )}</nav><div class="sidebar-foot"><strong>A good dataset starts here.</strong>Keep the labels on. Measure every fill. Make every photo count.<hr class="divider">OTH Amberg-Weiden<br>Computer vision project</div></aside><main class="main"><div class="topbar"><span class="crumb">Workspace &nbsp; / &nbsp; <strong>Water in a bottle</strong></span><div class="brand mobile-brand"><span class="brand-icon">◒</span>BottleCapture</div><div class="topright">${reconnectBadge()}<span class="avatar">SA</span></div></div>${content}<div class="footer-note">BOTTLECAPTURE · MEASURE CAREFULLY. CAPTURE CONSISTENTLY. · VERSION __BUILD__</div></main></div>`;
+    )}</nav><div class="sidebar-foot"><strong>A good dataset starts here.</strong>Keep the labels on. Measure every fill. Make every photo count.<hr class="divider">OTH Amberg-Weiden<br>Computer vision project</div></aside><main class="main"><div class="topbar"><span class="crumb">Workspace &nbsp; / &nbsp; <strong>Water in a bottle</strong></span><div class="brand mobile-brand"><span class="brand-icon">◒</span>BottleCapture</div><div class="topright"><span id="syncBadge">${reconnectBadge()}</span><span class="avatar">SA</span></div></div>${content}<div class="footer-note">BOTTLECAPTURE · MEASURE CAREFULLY. CAPTURE CONSISTENTLY. · VERSION __BUILD__</div></main></div>`;
 }
 function render() {
   let content;
@@ -662,7 +662,7 @@ async function saveBatch(e) {
     render();
     window.scrollTo(0, 0);
     toast(`Saved ${saved} photos locally.`);
-    if (drive.connected() && navigator.onLine) syncNow().catch(fail);
+    autoSync();
   } catch (e) {
     if (button.isConnected) button.disabled = false;
     await refresh();
@@ -1385,7 +1385,7 @@ async function savePhoto(e) {
       await refresh();
       nav("dataset");
       toast("Retake saved · " + p.name);
-      if (drive.connected() && navigator.onLine) syncNow().catch(fail);
+      autoSync();
       return;
     }
     await addPhoto(p);
@@ -1394,13 +1394,50 @@ async function savePhoto(e) {
     render();
     window.scrollTo(0, 0);
     toast("Saved locally · " + p.name);
-    if (drive.connected() && navigator.onLine) syncNow().catch(fail);
+    autoSync();
   } catch (e) {
     if (button.isConnected) button.disabled = false;
     throw e;
   }
 }
-async function syncNow() {
+// Upload in the background and keep trying until everything is on Drive.
+// Waits 5 s, 10 s, 20 s… (at most 1 min) between tries. Pauses while the page is
+// hidden or the login has expired; coming back to the page starts it again.
+let retryTimer = null,
+  retryDelay = 5000;
+function autoSync(delay = 300) {
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(runAutoSync, delay);
+}
+function updateSyncBadge() {
+  const el = $("#syncBadge");
+  if (el) el.innerHTML = reconnectBadge();
+  $("#reconnectBadge")?.addEventListener("click", connectNow);
+}
+async function runAutoSync() {
+  retryTimer = null;
+  if (!photos.some((p) => !p.synced) || !navigator.onLine || document.hidden)
+    return;
+  if (drive.isBusy()) return autoSync(5000);
+  if (!drive.connected() && !(await keepConnected())) return;
+  try {
+    await syncNow({ quiet: true });
+    retryDelay = 5000;
+  } catch {
+    if (!drive.connected()) return updateSyncBadge(); // one tap on Reconnect resumes
+    autoSync(retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 60000);
+    return;
+  }
+  // Photos saved while this upload ran go out straight away.
+  if (photos.some((p) => !p.synced)) autoSync(1000);
+}
+async function syncNow(opts) {
+  const quiet = opts?.quiet === true;
+  if (!quiet && drive.isBusy()) {
+    toast("Already uploading · " + syncMessage);
+    return;
+  }
   if (!navigator.onLine)
     throw Error(
       "You are offline. Your saved photos remain queued on this device.",
@@ -1415,11 +1452,15 @@ async function syncNow() {
     await refresh();
     await loadSettings();
     if (page === "dataset" || page === "settings" || page === "home") render();
-    toast(syncMessage);
+    else updateSyncBadge();
+    if (!quiet) toast(syncMessage);
     // Pick up what others changed, like a pull after a push.
     pullNow(true).catch(() => {});
   } catch (e) {
-    syncMessage = "Upload paused: " + e.message;
+    syncMessage =
+      (quiet && drive.connected()
+        ? "Upload interrupted, retrying automatically: "
+        : "Upload paused: ") + e.message;
     if ($("#syncStatus")) $("#syncStatus").textContent = syncMessage;
     throw e;
   }
@@ -1462,8 +1503,7 @@ function openCorrect() {
       toast(
         `${name} is now ${grams(water)} g water${changed ? ` · ${changed} photos relabelled` : ""}.`,
       );
-      if (changed && drive.connected() && navigator.onLine)
-        syncNow().catch(fail);
+      if (changed) autoSync();
     } catch (err) {
       button.disabled = false;
       fail(err);
@@ -1498,7 +1538,7 @@ async function keepConnected() {
     await drive.renew(settingsCache.client, settingsCache.email);
     await loadSettings();
     if (!["shoot", "new"].includes(page) && !$("#modal").open) render();
-    if (photos.some((p) => !p.synced)) syncNow().catch(() => {});
+    autoSync();
     return true;
   } catch {
     // Still shows the Reconnect badge.
@@ -1664,9 +1704,21 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("offline", () =>
   toast("Offline. Keep this page open; photos can still be saved locally."),
 );
-window.addEventListener("online", () =>
-  toast("Connection restored. Use Sync now to upload pending photos."),
-);
+window.addEventListener("online", () => {
+  toast("Connection restored. Uploading pending photos…");
+  autoSync(1000);
+});
+// Coming back from the phone camera, the lock screen or another app: resume uploads.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    retryDelay = 5000;
+    autoSync(800);
+  }
+});
+window.addEventListener("pageshow", () => autoSync(800));
+setInterval(() => {
+  if (!retryTimer) autoSync(0);
+}, 30000);
 window.addEventListener("beforeunload", (e) => {
   if (candidate || batch) {
     e.preventDefault();
@@ -1696,6 +1748,7 @@ async function autoPull() {
     pullNow(true).catch(() => {});
 }
 autoPull();
+autoSync(2000);
 setInterval(autoPull, 120000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) autoPull();
