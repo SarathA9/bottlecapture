@@ -209,31 +209,31 @@ async function api(path, options = {}) {
     }
   }
 }
-async function apiOnce(path, options = {}) {
+// One authorised request with a time limit. Requests that started before the
+// page went to the background are dropped when it comes back (see above).
+async function send(url, opts = {}, timeout = 90000) {
   if (!connected())
     throw Error("Reconnect Google Drive to continue uploading.");
-  const { upload, raw, retry, ...opts } = options;
   const req = { started: Date.now(), ctl: new AbortController() },
     timer = setTimeout(
       () =>
         req.ctl.abort(
           new DOMException("Drive did not answer in time", "TimeoutError"),
         ),
-      90000,
+      timeout,
     );
   live.add(req);
-  let r;
   try {
-    r = await fetch(
-      (upload
-        ? "https://www.googleapis.com/upload/drive/v3"
-        : "https://www.googleapis.com/drive/v3") + path,
-      {
-        ...opts,
-        headers: { Authorization: "Bearer " + token, ...opts.headers },
-        signal: req.ctl.signal,
-      },
-    );
+    const r = await fetch(url, {
+      ...opts,
+      headers: { Authorization: "Bearer " + token, ...opts.headers },
+      signal: req.ctl.signal,
+    });
+    if (r.status === 401) {
+      clearSession();
+      throw Error("Google session expired. Reconnect to continue.");
+    }
+    return r;
   } catch (e) {
     const why = req.ctl.signal.reason;
     throw why instanceof DOMException ? why : e;
@@ -241,18 +241,23 @@ async function apiOnce(path, options = {}) {
     clearTimeout(timer);
     live.delete(req);
   }
-  if (r.status === 401) {
-    clearSession();
-    throw Error("Google session expired. Reconnect to continue.");
-  }
-  if (!r.ok) {
-    const e = await r.json().catch(() => ({}));
-    const error = Error(
-      e.error?.message || "Google Drive returned " + r.status,
-    );
-    error.status = r.status;
-    throw error;
-  }
+}
+async function failed(r) {
+  const e = await r.json().catch(() => ({})),
+    error = Error(e.error?.message || "Google Drive returned " + r.status);
+  error.status = r.status;
+  return error;
+}
+async function apiOnce(path, options = {}) {
+  const { upload, raw, retry, timeout, ...opts } = options;
+  const r = await send(
+    (upload
+      ? "https://www.googleapis.com/upload/drive/v3"
+      : "https://www.googleapis.com/drive/v3") + path,
+    opts,
+    timeout,
+  );
+  if (!r.ok) throw await failed(r);
   if (raw) return r.blob();
   return r.status === 204 ? {} : r.json();
 }
@@ -291,7 +296,107 @@ async function nextId() {
   return (await api("/files/generateIds?count=1&space=drive&type=files"))
     .ids[0];
 }
-async function ensureFile(id, meta, blob) {
+// Photos go up in 512 KB pieces (Google's resumable upload). Each piece has its
+// own time limit, and after a dropped connection the upload continues from the
+// last piece Drive confirmed, instead of starting the whole photo again. On a
+// slow phone connection a 6 MB photo in one request could never finish.
+const PIECE = 512 * 1024,
+  RESUMABLE_FROM = 768 * 1024,
+  uploads = new Map(); // file ID -> { url, size }, kept until the photo is done
+let noResumable = false;
+const FILE_FIELDS = "id,name,size,trashed,appProperties";
+// How far Drive has got: returns the next byte to send, or the finished file.
+async function uploadedSoFar(u) {
+  const r = await send(
+    u.url,
+    { method: "PUT", headers: { "Content-Range": `bytes */${u.size}` } },
+    30000,
+  );
+  if (r.ok) return { done: await r.json() };
+  if (r.status === 308) {
+    const m = (r.headers.get("Range") || "").match(/bytes=0-(\d+)/);
+    return { next: m ? Number(m[1]) + 1 : 0 };
+  }
+  throw await failed(r);
+}
+async function resumable(id, meta, blob, onProgress) {
+  let u = uploads.get(id);
+  if (!u || u.size !== blob.size) {
+    const r = await send(
+      `https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=${FILE_FIELDS}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=UTF-8",
+          "X-Upload-Content-Type": blob.type || "application/octet-stream",
+          "X-Upload-Content-Length": String(blob.size),
+        },
+        body: JSON.stringify({ id, ...meta }),
+      },
+      30000,
+    );
+    if (!r.ok) throw await failed(r);
+    const url = r.headers.get("Location");
+    if (!url) {
+      // The browser could not read the upload address: use one request instead.
+      noResumable = true;
+      return null;
+    }
+    u = { url, size: blob.size };
+    uploads.set(id, u);
+  }
+  let next = 0,
+    misses = 0;
+  try {
+    const at = await uploadedSoFar(u);
+    if (at.done) return at.done;
+    next = at.next;
+  } catch (e) {
+    if (e.status === 404 || e.status === 410) uploads.delete(id); // expired: start over
+    throw e;
+  }
+  while (true) {
+    const end = Math.min(next + PIECE, blob.size);
+    onProgress?.(next / blob.size);
+    try {
+      const r = await send(
+        u.url,
+        {
+          method: "PUT",
+          headers: { "Content-Range": `bytes ${next}-${end - 1}/${blob.size}` },
+          body: blob.slice(next, end),
+        },
+        60000,
+      );
+      if (r.ok) {
+        uploads.delete(id);
+        onProgress?.(1);
+        return r.json();
+      }
+      if (r.status === 308) {
+        const m = (r.headers.get("Range") || "").match(/bytes=0-(\d+)/);
+        next = m ? Number(m[1]) + 1 : end;
+        misses = 0;
+        continue;
+      }
+      if (r.status === 404 || r.status === 410) uploads.delete(id);
+      throw await failed(r);
+    } catch (e) {
+      // A dropped piece: wait, ask Drive what it already has, continue from there.
+      if (!transient(e) || ++misses > 6 || !connected()) throw e;
+      await new Promise((ok) =>
+        setTimeout(ok, Math.min(misses, 4) * retryWait),
+      );
+      const at = await uploadedSoFar(u).catch(() => null);
+      if (at?.done) {
+        uploads.delete(id);
+        return at.done;
+      }
+      if (at) next = at.next;
+    }
+  }
+}
+async function ensureFile(id, meta, blob, onProgress) {
   try {
     return await api(
       "/files/" + id + "?fields=id,name,size,trashed,appProperties",
@@ -307,6 +412,10 @@ async function ensureFile(id, meta, blob) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, ...meta }),
       });
+    if (blob.size >= RESUMABLE_FROM && !noResumable) {
+      const done = await resumable(id, meta, blob, onProgress);
+      if (done) return done;
+    }
     const boundary = "bottle_" + crypto.randomUUID(),
       body = new Blob([
         `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ id, ...meta })}\r\n--${boundary}\r\nContent-Type: ${blob.type || "application/octet-stream"}\r\n\r\n`,
@@ -318,6 +427,7 @@ async function ensureFile(id, meta, blob) {
       {
         upload: true,
         retry: true,
+        timeout: Math.max(90000, (body.size / 15000) * 1000),
         method: "POST",
         headers: { "Content-Type": "multipart/related; boundary=" + boundary },
         body,
@@ -785,11 +895,13 @@ export async function sync(onStatus = () => {}) {
       const root = await folder("root", ROOT_NAME);
       await setting("driveRoot", root);
       const runs = await all("runs");
-      let uploaded = 0;
-      const blocked = new Set();
+      let uploaded = 0,
+        lastError = null;
+      const blocked = new Set(),
+        skipped = new Set(); // failed this round; tried again on the next sync
       while (true) {
         const pending = (await all("photos")).filter(
-          (p) => !p.synced && !blocked.has(p.id),
+          (p) => !p.synced && !blocked.has(p.id) && !skipped.has(p.id),
         );
         if (!pending.length) break;
         for (let i = 0; i < pending.length; i++) {
@@ -828,6 +940,10 @@ export async function sync(onStatus = () => {}) {
                 p.cloud.image,
                 { name: p.name, parents: [level], mimeType: "image/jpeg" },
                 p.blob,
+                (f) =>
+                  onStatus(
+                    `Uploading ${i + 1} of ${pending.length} · ${p.name} · ${Math.round(f * 100)}%`,
+                  ),
               );
               if (image.trashed || Number(image.size) !== p.blob.size)
                 throw Error(
@@ -865,12 +981,28 @@ export async function sync(onStatus = () => {}) {
                 if (p.synced) break;
                 continue;
               }
-              if (e.code !== "deleted") throw e;
-              // Kept on this device, never removed automatically. Export or delete it here.
-              blocked.add(p.id);
+              if (e.code === "deleted") {
+                // Kept on this device, never removed automatically. Export or delete it here.
+                blocked.add(p.id);
+                break;
+              }
+              // Login gone or Drive refusing everything: stop. Otherwise skip this
+              // photo for now so the rest of the queue keeps moving.
+              if (!connected() || e.status === 403) throw e;
+              skipped.add(p.id);
+              lastError = e;
+              onStatus(`${p.name} will be tried again later · ${e.message}`);
               break;
             }
         }
+      }
+      if (skipped.size) {
+        const e = Error(
+          `${skipped.size} photo${skipped.size > 1 ? "s" : ""} did not upload yet and will be tried again: ${lastError?.message || "connection problem"}`,
+        );
+        e.name = lastError?.name || "Error";
+        e.status = lastError?.status;
+        throw e;
       }
       onStatus(
         blocked.size

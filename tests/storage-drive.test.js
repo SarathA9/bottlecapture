@@ -41,7 +41,12 @@ const files = new Map();
 let me = "test@example.invalid";
 let sequence = 0,
   imageCreates = 0,
-  failLabel = 9; // Drive answers 503 this many times in a row (3 tries × 3 per photo)
+  failLabel = 9, // Drive answers 503 this many times in a row (3 tries × 3 per photo)
+  dropPieces = 0, // resumable pieces whose answer is lost after Drive stored them
+  pieces = 0,
+  hideLocation = false; // a browser that cannot read Drive's upload address
+// Resumable uploads in progress: upload id -> { meta, bytes, total }
+const sessions = new Map();
 globalThis.google = {
   accounts: {
     oauth2: {
@@ -130,6 +135,69 @@ globalThis.fetch = async (url, opts = {}) => {
     files.set(id, f);
     return response(f);
   }
+  if (method === "POST" && u.searchParams.get("uploadType") === "resumable") {
+    const meta = JSON.parse(opts.body),
+      sid = "up" + ++sequence;
+    sessions.set(sid, {
+      meta,
+      bytes: new Uint8Array(0),
+      total: Number(opts.headers["X-Upload-Content-Length"]),
+    });
+    if (hideLocation) return new Response(null, { status: 200 });
+    return new Response(null, {
+      status: 200,
+      headers: {
+        Location:
+          "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=" +
+          sid,
+      },
+    });
+  }
+  if (method === "PUT") {
+    const up = sessions.get(u.searchParams.get("upload_id"));
+    if (!up) return response({ error: { message: "gone" } }, 404);
+    const range = opts.headers["Content-Range"],
+      have = () =>
+        up.bytes.length ? { Range: `bytes=0-${up.bytes.length - 1}` } : {};
+    const finish = () => {
+      if (up.meta.mimeType === "image/jpeg") imageCreates++;
+      const f = {
+        id: up.meta.id,
+        name: up.meta.name,
+        mimeType: up.meta.mimeType,
+        parents: up.meta.parents || [],
+        owners: [{ emailAddress: me }],
+        createdTime: new Date(Date.now() + sequence).toISOString(),
+        data: new TextDecoder().decode(up.bytes),
+        size: String(up.bytes.length),
+        trashed: false,
+      };
+      files.set(f.id, f);
+      return response(f);
+    };
+    if (range.startsWith("bytes */"))
+      return up.bytes.length === up.total
+        ? response(files.get(up.meta.id))
+        : new Response(null, { status: 308, headers: have() });
+    const from = Number(range.match(/^bytes (\d+)-/)[1]);
+    assert.equal(from, up.bytes.length, "piece must continue where Drive is");
+    const chunk = new Uint8Array(await opts.body.arrayBuffer()),
+      joined = new Uint8Array(up.bytes.length + chunk.length);
+    joined.set(up.bytes);
+    joined.set(chunk, up.bytes.length);
+    up.bytes = joined;
+    pieces++;
+    const done = up.bytes.length === up.total,
+      result = done
+        ? finish()
+        : new Response(null, { status: 308, headers: have() });
+    // Drive stored the piece, but the phone never hears back.
+    if (dropPieces > 0 && !done) {
+      dropPieces--;
+      throw new TypeError("Load failed");
+    }
+    return result;
+  }
   if (method === "POST") {
     let meta, size, data;
     if (typeof opts.body === "string") meta = JSON.parse(opts.body);
@@ -198,6 +266,56 @@ files.delete(extra.cloud.image);
 files.delete(extra.cloud.label);
 await remove("photos", q.id);
 imageCreates = 1;
+// A large photo goes up in 512 KB pieces. Two lost answers halfway do not
+// restart it: the upload asks Drive what it has and continues from there.
+{
+  const big = "0123456789abcdef".repeat(128 * 1024), // 2 MB
+    b = {
+      ...saved,
+      id: saved.id.replace(/:\d+$/, ":9"),
+      shot: 9,
+      name: "big.jpg",
+      blob: new Blob([big], { type: "image/jpeg" }),
+      synced: false,
+      cloud: undefined,
+    };
+  delete b.syncedAt;
+  await put("photos", b);
+  dropPieces = 2;
+  pieces = 0;
+  const before = imageCreates;
+  await sync();
+  const done = await get("photos", b.id);
+  assert.equal(done.synced, true);
+  assert.equal(files.get(done.cloud.image).data, big, "uploaded bytes intact");
+  assert.equal(pieces, 4, "each 512 KB piece is sent once, none repeated");
+  assert.equal(imageCreates, before + 1);
+  files.delete(done.cloud.image);
+  files.delete(done.cloud.label);
+  await remove("photos", b.id);
+  imageCreates = before;
+  console.log(
+    "PASS: large photos upload in 512 KB pieces and resume after a lost connection.",
+  );
+  // Fallback: the upload address is not readable, so the photo goes in one request.
+  const c = { ...b, id: b.id.replace(/:9$/, ":8"), shot: 8, name: "big2.jpg" };
+  await put("photos", c);
+  hideLocation = true;
+  pieces = 0;
+  await sync();
+  const done2 = await get("photos", c.id);
+  assert.equal(done2.synced, true);
+  assert.equal(files.get(done2.cloud.image).data, big);
+  assert.equal(pieces, 0, "no pieces: one multipart request");
+  files.delete(done2.cloud.image);
+  files.delete(done2.cloud.label);
+  await remove("photos", c.id);
+  imageCreates = before;
+  hideLocation = false;
+  console.log(
+    "PASS: without a readable upload address the photo still uploads in one request.",
+  );
+}
 console.log(
   "PASS: a single Drive hiccup is retried inside one sync, without duplicates.",
 );
