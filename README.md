@@ -3,7 +3,7 @@
 A private, mobile-first web application for collecting a four-bottle water-mass dataset. Browser-native ES modules, IndexedDB, Google Identity Services, and Google Drive v3. No LLM API, backend photo storage, or prediction model is included.
 
 ## Use
-Open the published HTTPS site on your phone. Settings contains the one-time Google OAuth setup. Create a session (bottle, physical bottle ID, split, tare, full reference). Tap **Weigh a new fill**: the app suggests a random amount to pour, you weigh it and enter the balance reading. Then take about 8 photos (4 for validation/holdout) in different spots, following the shot prompt, and tag each photo in a few taps. Pour water in or out and weigh again for the next fill.
+Open the published HTTPS site on your phone. Settings contains the one-time Google OAuth setup. Create a session (bottle, physical bottle ID, split, tare, full reference). Tap **Weigh a new fill**: the app suggests a random amount to pour, you weigh it and enter the balance reading. Then take about 11 photos (4 for validation/holdout) in different spots, following the shot prompt, and tag each photo in a few taps. Pour water in or out and weigh again for the next fill.
 
 Photos can be taken with the phone camera one at a time, with the live camera, or shot in bulk with the phone camera app and imported together as one fill. Save commits original JPEG bytes (or converts other formats to JPEG) to IndexedDB, then queues Drive upload when connected.
 
@@ -31,7 +31,7 @@ Built to match the professor's validation photos: every image is taken in a diff
 - **Fills, not levels.** Each fill is one balance reading. The suggested pour comes from the least-covered tenth of the range for that bottle and split (random within it), so masses spread evenly and never sit on 10% steps.
 - **Many spots per fill.** A rotating 8-step shot plan prompts a new spot, label side (front/side/back), camera height (low/bottle height/above) and distance. Each fill starts at a different plan step.
 - **Tags per photo.** spot, label_facing, camera_height, distance, visibility, plus fill_id, target_water_g and protocol in labels.csv. Use them for error analysis, not as model inputs.
-- **Goal per bottle:** about 60 training fills × 8 photos, 12 validation and 12 holdout fills × 4 photos on other days. Use 2–3 physical bottles per type.
+- **Goal per bottle:** about 60 training fills × 11 photos, 12 validation and 12 holdout fills × 4 photos on other days. Use 2–3 physical bottles per type.
 - **Leakage.** Group splits by fill_id (or session). All photos of one fill share one water level.
 
 Sessions created before protocol 2 keep the old 11-level, fixed-view workflow and filenames (L03_A_01).

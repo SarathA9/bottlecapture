@@ -341,7 +341,7 @@ export const grams = (n) =>
 export const countShots = (r) =>
   r.protocol === PROTOCOL
     ? r.split === "train"
-      ? 8
+      ? 11
       : 4
     : r.split === "train"
       ? 10

@@ -11,7 +11,7 @@ Read this first. It hands over the state of the project from an earlier Claude.a
 ## This repo
 - `dist/`: the BottleCapture web app (plain ES modules, no build step). Deployed to GitHub Pages by `.github/workflows/pages.yml`, which runs `npm test` and stamps module URLs with the commit ID.
   - Photos and labels are stored per device in IndexedDB and synced to Google Drive (full `drive` scope, shared dataset folder, delete markers via `appProperties.bottlecaptureDeleted`).
-  - Protocol 2 (current): free random fills per session (`F01`, `F02`…), about 8 tagged photos per fill (spot, label side, camera height, distance, water-surface visibility). New-fill suggestions aim at the biggest gaps and avoid amounts within 10 g of existing fills.
+  - Protocol 2 (current): free random fills per session (`F01`, `F02`…), about 11 tagged photos per fill (4 for validation/holdout) (spot, label side, camera height, distance, water-surface visibility). New-fill suggestions aim at the biggest gaps and avoid amounts within 10 g of existing fills.
   - Each photo has a JSON sidecar with `water_mass_g`, `fill_id`, `session_id`, `bottle_id`, `split`, tags. Filenames like `B02_I01_S01_d10b6bb3_F02_P01.jpg`.
   - Tests: `npm test` (Node, fake IndexedDB, mocked Drive). Keep them passing.
 - `ml/`: the model.
@@ -34,7 +34,7 @@ Read this first. It hands over the state of the project from an earlier Claude.a
   - Next planned check: `python train.py --data "$HOME/BottleCapture Dataset" --cv 5 --probe` (and with `--arch convnext_tiny`).
 
 ## Next steps agreed
-1. Collect all four bottles, about 40–60 fills per bottle, ~8 varied photos per fill.
+1. Collect all four bottles, about 40–60 fills per bottle, ~11 varied photos per fill.
 2. Add validation sessions (another day/room, 10–12 fills per bottle, split = validation).
 3. Fill gaps (350–435 g, near full), add evening/lamp lighting, start a new session per day/place with the right background.
 4. Re-run grouped CV and the linear probe as data grows; only then compare models.
