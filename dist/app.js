@@ -316,7 +316,7 @@ function legacyShootPage() {
   return `${header(`${retake ? "Retake · " : ""}Shot ${shot + 1} of ${countShots(r)} · ${s[0]}`, `${level * 10}% target · Actual water: ${grams(f.mass)} g`, `<button class="btn secondary small" id="backSession">${retake ? "Cancel retake" : "Pause session"}</button>`)}${retake ? '<div class="notice warn">Retake mode. When you save, this photo replaces the old one here and on Google Drive. The old Drive files move to Drive Trash.</div>' : ""}${browserWarning()}<div class="capture-layout"><section><div id="cameraStage"><div class="viewfinder" id="viewfinder"><div class="cam-placeholder">${icon("capture")}<p style="color:#b7c8b7">Your next research image.</p><button class="btn light" id="startCamera">Open live camera</button><p class="tiny" style="color:#a8baaa">Or use the phone camera button below for a full-resolution photo.</p></div></div><div id="cameraControls"></div></div><label class="btn secondary" style="width:100%;margin:12px 0;cursor:pointer">${icon("capture")} Use phone camera / choose photo<input id="fileCamera" type="file" accept="image/*" capture="environment" hidden></label><p class="tiny">The live camera may use a lower resolution. Use the phone camera button for the phone’s normal photo quality. Review image dimensions before saving.</p><div id="review"></div></section><section class="panel instruction-panel"><div class="eyebrow">${esc(s[3])}</div><h2 class="instruction">${s[1]}</h2><p>${s[2]}</p>${angleDiagram(shot)}<ol class="steps"><li>Original label on. Bottle upright.</li><li>Cap and base visible, with a small margin.</li><li>Tap to focus in the iPhone camera. Avoid glare and motion blur.</li><li>No scale, mass notes or measuring jug in view.</li></ol><div class="eyebrow">Assigned filename</div><div class="filename">${photoName(r, level, shot)}</div><p class="tiny">${photoPath(r, level, shot).split("/").slice(0, -1).join(" / ")}</p></section></div>`;
 }
 function dataset() {
-  return `${header("Your dataset, organised.", "Every approved photo keeps its measured mass and capture details.", `<div class="actions"><button class="btn secondary" id="pullDrive">${icon("download")} Load from Drive</button><button class="btn" id="syncNow">${icon("cloud")} Sync now</button></div>`)}<div class="notice">${photos.length} local photos · ${photos.filter((p) => p.synced).length} confirmed on Drive · ${photos.filter((p) => !p.synced).length} waiting.${trashCount ? ` ${trashCount} old Drive files waiting to move to Trash.` : ""} ${lonely() ? `<strong>Not shared yet:</strong> only you can see this dataset folder. Open Settings to invite your partner, or ask the dataset owner to invite ${esc(settingsCache.email)}. ` : ""}${settingsCache.rootInfo ? `Shared Drive folder owned by <strong>${esc(settingsCache.rootInfo.owners?.[0]?.emailAddress || "unknown")}</strong>. Changes from everyone sharing it load automatically.` : "Connect Google Drive in Settings to work on the shared dataset."}</div>${measurements()}<div class="toolbar"><select id="datasetFilter" aria-label="Filter by bottle"><option value="all">All bottles</option>${bottles.map((b) => `<option value="${b.id}">${b.id} · ${b.name}</option>`).join("")}</select><button class="btn secondary small" id="csvExport">${icon("download")} Download labels CSV</button><button class="btn secondary small" data-export="all">Export all ZIP</button></div><p class="sync-status" id="syncStatus">${esc(syncMessage)}</p><div class="photo-grid" id="photoGrid">${photoTiles(photos)}</div>${!photos.length ? '<section class="panel empty"><h2>No photos yet.</h2><p>Your reviewed photos will appear here with their actual water mass.</p><button class="btn" data-new="B04">Start collecting</button></section>' : ""}`;
+  return `${header("Your dataset, organised.", "Every approved photo keeps its measured mass and capture details.", `<div class="actions"><button class="btn secondary" id="pullDrive">${icon("download")} Load from Drive</button><button class="btn" id="syncNow">${icon("cloud")} Sync now</button></div>`)}<div class="notice">${photos.length} local photos · ${photos.filter((p) => p.synced).length} confirmed on Drive · ${photos.filter((p) => !p.synced).length} waiting.${photos.some((p) => !p.synced) ? " Your uploads go first; your partner's new photos load after them." : ""}${trashCount ? ` ${trashCount} old Drive files waiting to move to Trash.` : ""} ${lonely() ? `<strong>Not shared yet:</strong> only you can see this dataset folder. Open Settings to invite your partner, or ask the dataset owner to invite ${esc(settingsCache.email)}. ` : ""}${settingsCache.rootInfo ? `Shared Drive folder owned by <strong>${esc(settingsCache.rootInfo.owners?.[0]?.emailAddress || "unknown")}</strong>. Changes from everyone sharing it load automatically.` : "Connect Google Drive in Settings to work on the shared dataset."}</div>${measurements()}<div class="toolbar"><select id="datasetFilter" aria-label="Filter by bottle"><option value="all">All bottles</option>${bottles.map((b) => `<option value="${b.id}">${b.id} · ${b.name}</option>`).join("")}</select><button class="btn secondary small" id="csvExport">${icon("download")} Download labels CSV</button><button class="btn secondary small" data-export="all">Export all ZIP</button>${photos.some((p) => !p.synced) ? `<button class="btn small" data-export="pending">${icon("download")} Back up ${photos.filter((p) => !p.synced).length} waiting photos (ZIP)</button>` : ""}</div><p class="sync-status" id="syncStatus">${esc(syncMessage)}</p><div class="photo-grid" id="photoGrid">${photoTiles(photos)}</div>${!photos.length ? '<section class="panel empty"><h2>No photos yet.</h2><p>Your reviewed photos will appear here with their actual water mass.</p><button class="btn" data-new="B04">Start collecting</button></section>' : ""}`;
 }
 // ---------- Measurements by bottle (read-only overview) ----------
 // Every weighed fill per bottle, sorted by grams, with its photo count.
@@ -1621,7 +1621,9 @@ function download(blob, name) {
 }
 async function exportZip(id) {
   await refresh();
-  const selected = photos.filter((p) => id === "all" || p.run === id);
+  const selected = photos.filter((p) =>
+    id === "pending" ? !p.synced : id === "all" || p.run === id,
+  );
   if (!selected.length) throw Error("There are no photos to export yet.");
   const total = selected.reduce((n, p) => n + p.blob.size, 0);
   if (total > 900 * 1024 * 1024)
@@ -1671,7 +1673,11 @@ async function exportZip(id) {
     const result = await zip(files),
       name =
         "BottleCapture_" +
-        (id === "all" ? "all" : selectedRuns[0].session) +
+        (id === "all"
+          ? "all"
+          : id === "pending"
+            ? "waiting"
+            : selectedRuns[0].session) +
         "_" +
         new Date().toISOString().slice(0, 10) +
         ".zip";
@@ -1740,6 +1746,9 @@ render();
 // Skipped while capturing or with a dialog open, so the screen never changes under you.
 async function autoPull() {
   await keepConnected();
+  // Your own uploads come first. Downloading a partner's new photos would share
+  // the connection with them, so it waits until nothing of yours is queued.
+  if (photos.some((p) => !p.synced)) return;
   if (
     drive.connected() &&
     navigator.onLine &&
