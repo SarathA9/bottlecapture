@@ -300,10 +300,29 @@ async function nextId() {
 // own time limit, and after a dropped connection the upload continues from the
 // last piece Drive confirmed, instead of starting the whole photo again. On a
 // slow phone connection a 6 MB photo in one request could never finish.
-const PIECE = 512 * 1024,
+// Pieces must be multiples of 256 KB. They start at 1 MB, double (up to 8 MB)
+// while pieces go through quickly, and halve (down to 256 KB) after a failure.
+const UNIT = 256 * 1024,
+  PIECE_MIN = UNIT,
+  PIECE_MAX = 32 * UNIT,
+  PIECE = 4 * UNIT,
   RESUMABLE_FROM = 768 * 1024,
   uploads = new Map(); // file ID -> { url, size }, kept until the photo is done
-let noResumable = false;
+// "single": this device uploads each photo in one request (chosen by the speed test).
+let noResumable = (() => {
+  try {
+    return localStorage.getItem("bc-upload-mode") === "single";
+  } catch {
+    return false;
+  }
+})();
+export const uploadMode = () => (noResumable ? "single" : "pieces");
+export function setUploadMode(mode) {
+  noResumable = mode === "single";
+  try {
+    localStorage.setItem("bc-upload-mode", mode);
+  } catch {}
+}
 const FILE_FIELDS = "id,name,size,trashed,appProperties";
 // How far Drive has got: returns the next byte to send, or the finished file.
 async function uploadedSoFar(u) {
@@ -319,7 +338,14 @@ async function uploadedSoFar(u) {
   }
   throw await failed(r);
 }
-async function resumable(id, meta, blob, onProgress) {
+let piece = PIECE;
+export const pieceSize = () => piece;
+async function resumable(id, meta, stored, onProgress) {
+  // Read the photo into memory once. iPhone browsers can be slow at reading
+  // slices of a photo that lives in the browser's storage.
+  const blob = new Blob([await stored.arrayBuffer()], {
+    type: stored.type || "application/octet-stream",
+  });
   let u = uploads.get(id);
   if (!u || u.size !== blob.size) {
     const r = await send(
@@ -346,7 +372,8 @@ async function resumable(id, meta, blob, onProgress) {
     uploads.set(id, u);
   }
   let next = 0,
-    misses = 0;
+    misses = 0,
+    speed = 0;
   try {
     const at = await uploadedSoFar(u);
     if (at.done) return at.done;
@@ -356,8 +383,9 @@ async function resumable(id, meta, blob, onProgress) {
     throw e;
   }
   while (true) {
-    const end = Math.min(next + PIECE, blob.size);
-    onProgress?.(next / blob.size);
+    const end = Math.min(next + piece, blob.size),
+      t0 = Date.now();
+    onProgress?.(next / blob.size, speed);
     try {
       const r = await send(
         u.url,
@@ -368,21 +396,25 @@ async function resumable(id, meta, blob, onProgress) {
         },
         60000,
       );
+      const took = Math.max(1, Date.now() - t0);
+      speed = Math.round((end - next) / took); // KB/s (bytes per ms)
       if (r.ok) {
         uploads.delete(id);
-        onProgress?.(1);
+        onProgress?.(1, speed);
         return r.json();
       }
       if (r.status === 308) {
         const m = (r.headers.get("Range") || "").match(/bytes=0-(\d+)/);
         next = m ? Number(m[1]) + 1 : end;
         misses = 0;
+        if (took < 8000) piece = Math.min(piece * 2, PIECE_MAX);
         continue;
       }
       if (r.status === 404 || r.status === 410) uploads.delete(id);
       throw await failed(r);
     } catch (e) {
       // A dropped piece: wait, ask Drive what it already has, continue from there.
+      piece = Math.max(PIECE_MIN, piece / 2);
       if (!transient(e) || ++misses > 6 || !connected()) throw e;
       await new Promise((ok) =>
         setTimeout(ok, Math.min(misses, 4) * retryWait),
@@ -883,6 +915,83 @@ export async function pull(onStatus = () => {}) {
     return result;
   });
 }
+// Measure where upload time goes on this device. Uploads a 2 MB test file twice
+// (in pieces and in one request) into the dataset folder, then moves both to
+// Drive Trash. Also times reading one stored photo from this browser.
+export async function speedTest(onStatus = () => {}) {
+  if (busy) throw Error("An upload is running. Try again in a moment.");
+  busy = true;
+  try {
+    return await exclusive(async () => {
+      if (!connected()) throw Error("Connect Google Drive first.");
+      const out = {},
+        root = (await setting("driveRoot")) || (await findRoot());
+      if (!root) throw Error("No dataset folder yet. Upload one photo first.");
+      onStatus("Reading one stored photo…");
+      const stored =
+        (await all("photos")).find((p) => !p.synced) ||
+        (await all("photos"))[0];
+      if (stored) {
+        const t = Date.now();
+        await stored.blob.arrayBuffer();
+        out.readMs = Date.now() - t;
+        out.readMB = +(stored.blob.size / 1e6).toFixed(1);
+      }
+      const size = 2 * 1024 * 1024,
+        bytes = new Uint8Array(size);
+      crypto.getRandomValues(bytes.subarray(0, 65536));
+      const blob = new Blob([bytes], { type: "application/octet-stream" }),
+        meta = (n) => ({
+          name: `_speedtest_${n}_${Date.now()}.bin`,
+          parents: [root],
+        });
+      const made = [];
+      try {
+        onStatus("Uploading 2 MB in pieces…");
+        let t = Date.now();
+        const id1 = await nextId(),
+          saved = piece;
+        piece = PIECE;
+        const a = await resumable(id1, meta("pieces"), blob);
+        piece = saved;
+        if (a) {
+          made.push(id1);
+          out.piecesKBs = Math.round(size / (Date.now() - t));
+        } else out.piecesKBs = "not available in this browser";
+        onStatus("Uploading 2 MB in one request…");
+        t = Date.now();
+        const id2 = await nextId(),
+          boundary = "bottle_" + crypto.randomUUID(),
+          body = new Blob([
+            `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ id: id2, ...meta("single") })}\r\n--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n`,
+            blob,
+            `\r\n--${boundary}--`,
+          ]);
+        await api("/files?uploadType=multipart&fields=id", {
+          upload: true,
+          method: "POST",
+          timeout: 300000,
+          headers: {
+            "Content-Type": "multipart/related; boundary=" + boundary,
+          },
+          body,
+        });
+        made.push(id2);
+        out.singleKBs = Math.round(size / (Date.now() - t));
+      } finally {
+        for (const id of made)
+          await api("/files/" + id, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trashed: true }),
+          }).catch(() => {});
+      }
+      return out;
+    });
+  } finally {
+    busy = false;
+  }
+}
 export async function sync(onStatus = () => {}) {
   if (busy) return;
   busy = true;
@@ -940,9 +1049,9 @@ export async function sync(onStatus = () => {}) {
                 p.cloud.image,
                 { name: p.name, parents: [level], mimeType: "image/jpeg" },
                 p.blob,
-                (f) =>
+                (f, kbs) =>
                   onStatus(
-                    `Uploading ${i + 1} of ${pending.length} · ${p.name} · ${Math.round(f * 100)}%`,
+                    `Uploading ${i + 1} of ${pending.length} · ${p.name} · ${Math.round(f * 100)}%${kbs ? ` · ${kbs} KB/s` : ""}`,
                   ),
               );
               if (image.trashed || Number(image.size) !== p.blob.size)

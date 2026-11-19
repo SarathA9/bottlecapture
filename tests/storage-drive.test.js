@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { put, get, addPhoto, all, remove } from "../dist/db.js";
-import { connect, sync, setRetryWait } from "../dist/drive.js";
+import { connect, sync, setRetryWait, speedTest } from "../dist/drive.js";
 const r = {
   id: "run1",
   bottle: "B04",
@@ -1101,5 +1101,24 @@ console.log(
   assert.equal((await get("runs", "runC")).fills[1].mass, 440);
   console.log(
     "PASS: correcting a fill weight relabels its photos locally and on Drive, keeps the images, and other devices follow.",
+  );
+}
+// Speed test: both upload methods run, and both test files end up in Drive Trash.
+{
+  const before = [...files.values()].filter((f) => !f.trashed).length;
+  const st = await speedTest();
+  assert.ok(st.piecesKBs > 0, "pieces measured");
+  assert.ok(st.singleKBs > 0, "single request measured");
+  const tests = [...files.values()].filter((f) =>
+    f.name?.startsWith("_speedtest_"),
+  );
+  assert.equal(tests.length, 2);
+  assert.ok(
+    tests.every((f) => f.trashed),
+    "test files moved to Trash",
+  );
+  assert.equal([...files.values()].filter((f) => !f.trashed).length, before);
+  console.log(
+    "PASS: speed test measures both upload methods and trashes its test files.",
   );
 }
