@@ -1462,6 +1462,8 @@ async function syncNow(opts) {
         ? "Upload interrupted, retrying automatically: "
         : "Upload paused: ") + e.message;
     if ($("#syncStatus")) $("#syncStatus").textContent = syncMessage;
+    // After a tap on Sync now, keep going in the background too.
+    if (!quiet && drive.connected()) autoSync(retryDelay);
     throw e;
   }
 }

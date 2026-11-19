@@ -182,10 +182,37 @@ export async function renew(clientId, hint) {
     clearTimeout(timer);
   }
 }
+// Safari says "Load failed", Chrome "Failed to fetch": the connection dropped.
+const dropped = () =>
+  Object.assign(
+    Error(
+      "The connection to Google Drive dropped for a moment. Your photos are safe on this phone and upload again automatically.",
+    ),
+    { name: "TypeError" },
+  );
+// Requests that are safe to send twice: reads, trash/rename (PATCH) and creates
+// with a pre-generated file ID (Drive answers 409 to a repeat). Each gets two
+// more tries after a network drop, a timeout, a rate limit or a server error.
 async function api(path, options = {}) {
+  const method = options.method || "GET",
+    retry = options.retry ?? (method === "GET" || method === "PATCH");
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await apiOnce(path, options);
+    } catch (e) {
+      const network = e?.name === "TypeError";
+      if (retry && transient(e) && attempt < 3 && connected()) {
+        await new Promise((ok) => setTimeout(ok, attempt * retryWait));
+        continue;
+      }
+      throw network ? dropped() : e;
+    }
+  }
+}
+async function apiOnce(path, options = {}) {
   if (!connected())
     throw Error("Reconnect Google Drive to continue uploading.");
-  const { upload, raw, ...opts } = options;
+  const { upload, raw, retry, ...opts } = options;
   const req = { started: Date.now(), ctl: new AbortController() },
     timer = setTimeout(
       () =>
@@ -275,6 +302,7 @@ async function ensureFile(id, meta, blob) {
   try {
     if (!blob)
       return await api("/files?fields=id,name", {
+        retry: true,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, ...meta }),
@@ -289,6 +317,7 @@ async function ensureFile(id, meta, blob) {
       "/files?uploadType=multipart&fields=id,name,size,trashed,appProperties",
       {
         upload: true,
+        retry: true,
         method: "POST",
         headers: { "Content-Type": "multipart/related; boundary=" + boundary },
         body,

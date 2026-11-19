@@ -41,7 +41,7 @@ const files = new Map();
 let me = "test@example.invalid";
 let sequence = 0,
   imageCreates = 0,
-  failLabel = 3; // Drive answers 503 this many times in a row
+  failLabel = 9; // Drive answers 503 this many times in a row (3 tries × 3 per photo)
 globalThis.google = {
   accounts: {
     oauth2: {
@@ -164,7 +164,7 @@ globalThis.fetch = async (url, opts = {}) => {
 };
 await connect("test.apps.googleusercontent.com");
 setRetryWait(5);
-// Three 503s in a row: each photo gets three tries, then the sync stops and the
+// Drive keeps failing: after every retry the sync stops and the
 // photo stays queued with its Drive IDs (the app retries again later).
 await assert.rejects(sync(), /temporary failure/);
 const pending = await get("photos", p.id);
