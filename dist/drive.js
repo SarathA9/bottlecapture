@@ -100,7 +100,11 @@ export function disconnect() {
 // Accept a token from Google: check the scope and the account, then remember it.
 async function adopt(clientId, r) {
   if (r.error) throw Error(r.error_description || r.error);
-  if (google.accounts.oauth2.hasGrantedAllScopes?.(r, SCOPE) === false)
+  if (
+    globalThis.google?.accounts?.oauth2?.hasGrantedAllScopes?.(r, SCOPE) ===
+      false ||
+    (r.scope && !String(r.scope).split(" ").includes(SCOPE))
+  )
     throw Error(
       "Google Drive access was not allowed. Connect again and tick the Drive access box, so the shared dataset folder can be used.",
     );
@@ -141,6 +145,53 @@ function requestToken(clientId, { prompt, hint }) {
         ),
     });
     c.requestAccessToken({ prompt });
+  });
+}
+// Sign in without a pop-up: go to Google's page and come straight back. Used on
+// iPhone, where Chrome opens the sign-in pop-up as a separate tab and the reply
+// often never reaches the app. Photos stay saved on the phone meanwhile.
+// Needs this address as an "Authorized redirect URI" of the OAuth client.
+const REDIRECT_KEY = "bc-oauth-redirect";
+export const redirectUri = () =>
+  location.origin + location.pathname.replace(/[^/]*$/, "");
+export function connectByRedirect(clientId, hint) {
+  if (!clientId?.endsWith(".apps.googleusercontent.com"))
+    throw Error("Add your Google OAuth client ID in Settings first.");
+  const state = crypto.randomUUID();
+  sessionStorage.setItem(REDIRECT_KEY, JSON.stringify({ state, clientId }));
+  const q = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri(),
+    response_type: "token",
+    scope: SCOPE,
+    include_granted_scopes: "true",
+    state,
+    ...(hint ? { login_hint: hint } : { prompt: "select_account" }),
+  });
+  location.assign("https://accounts.google.com/o/oauth2/v2/auth?" + q);
+}
+// After coming back from Google: take the login from the address, then remove it.
+export async function finishRedirect() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (!h.has("access_token") && !h.has("error")) return null;
+  let saved = null;
+  try {
+    saved = JSON.parse(sessionStorage.getItem(REDIRECT_KEY) || "null");
+  } catch {}
+  sessionStorage.removeItem(REDIRECT_KEY);
+  history.replaceState(null, "", location.pathname + location.search);
+  if (!saved || h.get("state") !== saved.state)
+    throw Error("The Google sign-in reply did not match. Tap Reconnect again.");
+  if (h.get("error"))
+    throw Error(
+      h.get("error") === "access_denied"
+        ? "Google Drive access was not allowed."
+        : "Google sign-in failed: " + h.get("error"),
+    );
+  return adopt(saved.clientId, {
+    access_token: h.get("access_token"),
+    expires_in: h.get("expires_in"),
+    scope: h.get("scope"),
   });
 }
 // Call straight from a tap (no await before it), so Safari allows the sign-in window.
