@@ -109,19 +109,34 @@ def build(arch, pretrained=True):
     return m, head
 
 
+# Mixed precision on the GPU: about half the memory and faster on RTX cards.
+# The loss is scaled so small gradients do not vanish in 16-bit numbers.
+_scaler = None
+
+
+def amp(device):
+    return torch.autocast("cuda", dtype=torch.float16, enabled=device == "cuda")
+
+
 def run_epoch(model, loader, opt=None, device="cpu"):
+    global _scaler
     train = opt is not None
     model.train(train)
+    if _scaler is None:
+        _scaler = torch.amp.GradScaler("cuda", enabled=device == "cuda")
     losses, preds, ys = [], [], []
     for x, y in loader:
         x, y = x.to(device), y.to(device)
         with torch.set_grad_enabled(train):
-            p = model(x).squeeze(1)
+            with amp(device):
+                p = model(x).squeeze(1)
+            p = p.float()
             loss = nn.functional.smooth_l1_loss(p, y)
             if train:
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
+                opt.zero_grad(set_to_none=True)
+                _scaler.scale(loss).backward()
+                _scaler.step(opt)
+                _scaler.update()
         losses.append(loss.item())
         preds.append(p.detach().cpu())
         ys.append(y.cpu())
@@ -136,7 +151,8 @@ def predict(model, items, size, scale, device):
     out = []
     for x, _ in DataLoader(ds, batch_size=16):
         x = x.to(device)
-        p = (model(x) + model(torch.flip(x, dims=[3]))) / 2
+        with amp(device):
+            p = (model(x).float() + model(torch.flip(x, dims=[3])).float()) / 2
         out.append(p.squeeze(1).cpu())
     return np.clip(torch.cat(out).numpy() * scale, 0, None)
 

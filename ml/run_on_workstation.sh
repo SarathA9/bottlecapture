@@ -24,6 +24,17 @@ fi
 
 echo "GPU:"
 nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader || echo "  nvidia-smi not available"
+# The lab GPUs are shared. Training needs about 3 GB free; stop early if someone else is using it.
+FREE_MB=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)
+if [ "${FREE_MB:-0}" -lt 3000 ] && [ "${FORCE:-0}" != "1" ]; then
+  echo
+  echo "Only ${FREE_MB} MB of GPU memory is free on $(hostname -s): someone else is using this GPU."
+  echo "Processes on the GPU:"
+  nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader 2>/dev/null | sed 's/^/  /'
+  echo "Try another workstation (ki-029, ki-030, ki-031, ki-032) or wait until it is free."
+  echo "To start anyway: FORCE=1 bash $0 \"$DATA\""
+  exit 1
+fi
 
 # Own Python environment, so nothing system-wide changes.
 if [ ! -d "$HOME/bottle_venv" ]; then
@@ -46,14 +57,19 @@ if ! gpu_ok; then
 fi
 
 cd "$HERE"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Each step only runs if the one before it worked; a failure is reported as FAILED.
 nohup bash -c "
-  echo '=== Quick check: frozen network + ridge regression (grouped 5-fold) ===';
-  python train.py --data \"$DATA\" --cv 5 --probe --out \"$RUNS/probe\" --workers 4;
-  echo; echo '=== Grouped 5-fold cross-validation, fine-tuned (whole fills held out) ===';
-  python train.py --data \"$DATA\" --cv 5 --out \"$RUNS/cv\" --workers 4;
-  echo; echo '=== Final model on all training sessions ===';
-  python train.py --data \"$DATA\" --out \"$RUNS/final\" --workers 4;
-  echo; echo 'DONE. Model: $RUNS/final/model.pt'
+  set -e
+  trap 'echo; echo \"FAILED. Nothing after this point ran. Send the lines above to Claude.\"' ERR
+  echo \"Started \$(date) on \$(hostname -s)\"
+  echo '=== Quick check: frozen network + ridge regression (grouped 5-fold) ==='
+  python train.py --data \"$DATA\" --cv 5 --probe --out \"$RUNS/probe\" --workers 4
+  echo; echo '=== Grouped 5-fold cross-validation, fine-tuned (whole fills held out) ==='
+  python train.py --data \"$DATA\" --cv 5 --out \"$RUNS/cv\" --workers 4
+  echo; echo '=== Final model on all training sessions ==='
+  python train.py --data \"$DATA\" --out \"$RUNS/final\" --workers 4
+  echo; echo \"DONE \$(date). Model: $RUNS/final/model.pt\"
 " > "$RUNS/train.log" 2>&1 &
 echo
 echo "Training started in the background (process $!)."
