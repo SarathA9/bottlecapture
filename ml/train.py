@@ -23,6 +23,8 @@ from PIL import Image, ImageOps
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms
 
+from photocache import cache_photos
+
 # ---------------------------------------------------------------- data
 
 
@@ -248,6 +250,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-pretrained", action="store_true", help="only for offline smoke tests")
     ap.add_argument("--probe", action="store_true", help="with --cv: frozen network + ridge regression")
+    ap.add_argument("--cache", default=os.path.expanduser("~/bottle_cache"), help="folder for shrunk copies of the photos")
+    ap.add_argument("--no-cache", action="store_true", help="read the original photos every epoch (slow)")
     args = ap.parse_args()
 
     random.seed(args.seed)
@@ -255,6 +259,8 @@ def main():
     torch.manual_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     items = load_items(args.data, set(args.exclude_fill))
+    if not args.no_cache:
+        cache_photos(items, args.cache, longest=1024, workers=max(args.workers, 2))
     fills = sorted({i["fill"] for i in items})
     print(f"{len(items)} photos, {len(fills)} fills, {len({i['bottle'] for i in items})} bottles, device {device}")
     os.makedirs(args.out, exist_ok=True)

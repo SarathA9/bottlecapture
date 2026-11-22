@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Set up and train the water-mass model on an OTH GPU workstation (ki-029 … ki-032).
-# Usage:  bash run_on_workstation.sh "$HOME/BottleCapture Dataset"
+# Usage:  bash run_on_workstation.sh "$HOME/bottle_data_1122"
 # It runs in the background, so you can log out. Follow it with:
 #   tail -f ~/bottle_runs/train.log
 set -euo pipefail
 
 DATA="${1:-$HOME/BottleCapture Dataset}"
+DATA="${DATA%/}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNS="$HOME/bottle_runs"
 mkdir -p "$RUNS"
@@ -46,7 +47,9 @@ fi
 
 cd "$HERE"
 nohup bash -c "
-  echo '=== Grouped 5-fold cross-validation (whole fills held out) ===';
+  echo '=== Quick check: frozen network + ridge regression (grouped 5-fold) ===';
+  python train.py --data \"$DATA\" --cv 5 --probe --out \"$RUNS/probe\" --workers 4;
+  echo; echo '=== Grouped 5-fold cross-validation, fine-tuned (whole fills held out) ===';
   python train.py --data \"$DATA\" --cv 5 --out \"$RUNS/cv\" --workers 4;
   echo; echo '=== Final model on all training sessions ===';
   python train.py --data \"$DATA\" --out \"$RUNS/final\" --workers 4;

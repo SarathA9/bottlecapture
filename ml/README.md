@@ -10,21 +10,20 @@ Predicts grams of water in a bottle from one photo. Trained only on your BottleC
 - Never reads the professor's data during training.
 
 ## Run it on the OTH GPU workstation (DC-107)
-Turn on the OTH VPN first. Then, in PowerShell on your laptop:
+Turn on the OTH VPN first. Then, in PowerShell on your laptop, copy the dataset
+(photos AND .json files) into a new, dated folder, so no old photos get mixed in:
 ```
-# 1. Copy the dataset (photos AND .json files) to the workstation
-scp -r "C:\Users\sarat\Documents\Bottle Mass\BottleCapture Dataset" s.adukkadukkam@oth-aw.de@ki-029.oth-aw.de:~/
-
-# 2. Log in
+scp -r "C:\Users\sarat\Documents\Bottle Mass\BottleCapture Dataset" "s.adukkadukkam@oth-aw.de@ki-029.oth-aw.de:~/bottle_data_1122"
 ssh s.adukkadukkam@oth-aw.de@ki-029.oth-aw.de
 ```
 On the workstation:
 ```
-git clone https://github.com/SarathA9/bottlecapture.git
-bash bottlecapture/ml/run_on_workstation.sh "$HOME/BottleCapture Dataset"
+git -C ~/bottlecapture pull || git clone https://github.com/SarathA9/bottlecapture.git ~/bottlecapture
+bash ~/bottlecapture/ml/run_on_workstation.sh ~/bottle_data_1122
 tail -f ~/bottle_runs/train.log        # Ctrl+C stops watching, not training
 ```
-If ki-029 is busy or down, use ki-030, ki-031 or ki-032.
+The first run shrinks every photo once into `~/bottle_cache` (a few minutes); later
+runs reuse those copies. If ki-029 is busy or down, use ki-030, ki-031 or ki-032.
 
 ## Run it on Google Colab (free GPU)
 1. Zip your `BottleCapture Dataset` folder (photos + .json files) and upload it to Google Drive.
